@@ -397,6 +397,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const [diff, setDiff] = useState(false); // false = view, true = version diff
   const [open, setOpen] = useState(readDockOpen);
   const [showTree, setShowTree] = useState(true);
+  const [treeHover, setTreeHover] = useState(false); // hover-reveal popup (file open, tree hidden)
   const [stamp, setStamp] = useState(0);
   const [changedOpen, setChangedOpen] = useState(false);
   const [changed, setChanged] = useState([]);
@@ -421,6 +422,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
       const s = e.detail?.session;
       seeded.current = true;
       setPath(p); setSession(s); setDiff(false);
+      setShowTree(!p); // a produced-file open focuses the content (hide tree); root open shows the tree
       persistDockState({ path: p, session: s });
       setOpen(true); persistDockOpen(true); layout?.openDetails?.();
     };
@@ -481,6 +483,10 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const src = dockSrc(viewPath, { diff, session: effSession });
   const needSessionNote = diff && isTextPath(viewPath) && effSession === undefined;
   const nav = (next) => { setPath(next); }; // navigating resets diff
+  // Opening a file focuses the content and hides the tree (tab-like); the tree
+  // stays reachable via a hover-reveal strip. Navigating to a dir re-shows it.
+  const openFile = (p) => { setPath(p); setDiff(false); setShowTree(false); persistDockState({ path: p, session: effSession }); };
+  const navDir = (p) => { setPath(p); setDiff(false); setShowTree(true); }; // dir/root nav keeps the tree visible
   const relC = stripBase(viewPath, base);    // path relative to the workspace (for breadcrumb/Up)
   const upRel = upPath(relC);                // parent relative to the workspace (undefined = at base)
   const navClose = (rel) => nav(base && rel ? base + "/" + rel.replace(/^\/+/, "") : base ?? undefined);
@@ -503,6 +509,10 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-dock-note{background:rgba(255,191,0,.08);color:var(--dsw-alias-state-warn-primary,#f0b386);padding:4px 8px;font-size:11px;line-height:1.4;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));flex:none}
         .dshfp-dock-body{display:flex;flex:1;min-height:0}
         .dshfp-dock-tree{width:180px;min-width:180px;border-right:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));overflow:auto;padding:4px 0;flex:none}
+        .dshfp-tree-pop{position:relative;flex:none;width:20px;z-index:20}
+        .dshfp-tree-reveal{position:absolute;left:0;top:0;bottom:0;width:20px;display:grid;place-items:center;background:var(--dsw-alias-bg-base,#0f1117);border-right:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));color:var(--dsw-alias-label-tertiary,#9aa3b5);cursor:pointer}
+        .dshfp-tree-reveal:hover{color:var(--dsw-alias-label-primary,#eef1f8);background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
+        .dshfp-tree-popup{position:absolute;left:20px;top:0;bottom:0;width:200px;background:var(--dsw-alias-bg-base,#0f1117);border-right:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));box-shadow:6px 0 16px rgba(0,0,0,.35);z-index:19}
         .dshfp-dock iframe{flex:1;width:100%;border:0;min-height:0;background:#0f1117}
         .dshfp-tree-l{list-style:none;margin:0;padding:0}
         .dshfp-tree-c{list-style:none;margin:0;padding:0}
@@ -528,16 +538,16 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-changed-dot[data-status="modified"]{background:#e8b341}
       `}</style>
       <div className="dshfp-dock-head">
-        <button type="button" title={t?.("dock.home") ?? "Files root"} onClick={() => { nav(base); setDiff(false); }}>
+        <button type="button" title={t?.("dock.home") ?? "Files root"} onClick={() => { navDir(base); }}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 7 8 2.5 13.5 7"/><path d="M4 6.5V13h8V6.5"/></svg>
         </button>
-        <button type="button" title={t?.("dock.up") ?? "Up one level"} disabled={!path || !upRel} onClick={() => { nav(navClose(upRel)); setDiff(false); }}>
+        <button type="button" title={t?.("dock.up") ?? "Up one level"} disabled={!path || !upRel} onClick={() => { navDir(navClose(upRel)); }}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 10.5 8 5.5l5 5"/></svg>
         </button>
         <button type="button" title={t?.("dock.reload") ?? "Reload"} onClick={() => setStamp((s) => s + 1)}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 3.5V7h-3.5"/><path d="M3 12.5V9h3.5"/><path d="M13 7a5 5 0 0 0-8.5-3.5L3 5M13 9l-1.5 1.5A5 5 0 0 1 3 7"/></svg>
         </button>
-        <Breadcrumb path={relC} onNavigate={(rel) => { nav(navClose(rel)); setDiff(false); }} />
+        <Breadcrumb path={relC} onNavigate={(rel) => { navDir(navClose(rel)); }} />
         <button type="button" title={t?.("dock.tree") ?? "Toggle file tree"} data-on={showTree || undefined} onClick={() => setShowTree((v) => !v)}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 3.5h4v3H3z"/><path d="M9 9.5h4v3H9z"/><path d="M5 6.5v3M11 6.5v3M5 6.5h6"/></svg>
         </button>
@@ -563,7 +573,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
                 key={c.path}
                 className="dshfp-changed-item"
                 onClick={() => {
-                  setPath(c.path); setDiff(true); setChangedOpen(false);
+                  setPath(c.path); setDiff(true); setChangedOpen(false); setShowTree(false);
                   const sid = effSession;
                   if (sid) { setSession(sid); persistDockState({ path: c.path, session: sid }); }
                 }}
@@ -577,9 +587,24 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
       <div className="dshfp-dock-body">
         {showTree ? (
           <nav className="dshfp-dock-tree" aria-label={t?.("dock.tree") ?? "File tree"}>
-            <FileTree path={base} onOpen={(p) => { setPath(p); setDiff(false); }} activePath={viewPath} />
+            <FileTree path={base} onOpen={openFile} activePath={viewPath} />
           </nav>
-        ) : null}
+        ) : (
+          <div
+            className="dshfp-tree-pop"
+            onMouseEnter={() => setTreeHover(true)}
+            onMouseLeave={() => setTreeHover(false)}
+          >
+            <button type="button" className="dshfp-tree-reveal" title={t?.("dock.revealTree") ?? "Show file tree"} onClick={() => setShowTree(true)}>
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 3.5h4v3H3z"/><path d="M9 9.5h4v3H9z"/><path d="M5 6.5v3M11 6.5v3M5 6.5h6"/></svg>
+            </button>
+            {treeHover ? (
+              <nav className="dshfp-dock-tree dshfp-tree-popup" aria-label={t?.("dock.tree") ?? "File tree"}>
+                <FileTree path={base} onOpen={openFile} activePath={viewPath} />
+              </nav>
+            ) : null}
+          </div>
+        )}
         <iframe key={path + ":" + diff + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
       </div>
     </div>
@@ -684,8 +709,8 @@ function apply(ctx) {
   };
   const resolvePath = (rel) => resolvePanePath(getCwd(), rel);
   ctx.effect(() => ctx.locale.register(NS, {
-    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.tree": "Toggle file tree", "dock.changed": "Files changed this session", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first." },
-    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.tree": "切换文件树", "dock.changed": "本会话修改的文件", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件" }
+    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.tree": "Toggle file tree", "dock.revealTree": "Show file tree", "dock.changed": "Files changed this session", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first." },
+    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.tree": "切换文件树", "dock.revealTree": "显示文件树", "dock.changed": "本会话修改的文件", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件" }
   }), "dsh-file-pane: dictionaries");
   // Passive diff spill: agent edit before/after -> host RAM (per open session).
   ctx.conversationEvents.register(makeDiffSpillDefinition(getSession));
