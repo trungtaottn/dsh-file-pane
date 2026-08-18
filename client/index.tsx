@@ -485,6 +485,12 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   // stays reachable via a hover-reveal strip. Navigating to a dir re-shows it.
   const openFile = (p) => { setPath(p); setDiff(false); setShowTree(false); persistDockState({ path: p, session: effSession }); };
   const navDir = (p) => { setPath(p); setDiff(false); setShowTree(true); }; // dir/root nav keeps the tree visible
+  // VSCode-style activity toggle: clicking the ACTIVE view's icon collapses the
+  // panel back to the rail; clicking it again (or another icon) opens/switches.
+  const onAct = (v) => {
+    if (showTree && changeView === v) setShowTree(false);
+    else { setChangeView(v); setShowTree(true); }
+  };
   const relC = stripBase(viewPath, base);    // path relative to the workspace (for breadcrumb/Up)
   const upRel = upPath(relC);                // parent relative to the workspace (undefined = at base)
   const navClose = (rel) => nav(base && rel ? base + "/" + rel.replace(/^\/+/, "") : base ?? undefined);
@@ -570,10 +576,10 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
           onMouseLeave={() => setTreeHover(false)}
         >
           <div className="dshfp-rail">
-            <button type="button" className="dshfp-act" data-on={!changeView || undefined} title={t?.("dock.files") ?? "Files"} onClick={() => { setChangeView(false); setShowTree(true); }}>
+            <button type="button" className="dshfp-act" data-on={!changeView || undefined} title={t?.("dock.files") ?? "Files"} onClick={() => onAct(false)}>
               <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 2H13a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/></svg>
             </button>
-            <button type="button" className="dshfp-act" data-on={changeView || undefined} title={t?.("dock.git") ?? "Git / Changes"} onClick={() => { setChangeView(true); setShowTree(true); }}>
+            <button type="button" className="dshfp-act" data-on={changeView || undefined} title={t?.("dock.git") ?? "Git / Changes"} onClick={() => onAct(true)}>
               <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h4M4 8h4M4 12h4"/><path d="M12 3.5v9"/><path d="M10.5 5.5 12 4l1.5 1.5M10.5 10.5 12 12l1.5-1.5"/></svg>
             </button>
             <span className="dshfp-sp" />
