@@ -222,6 +222,17 @@ const layoutActions = {
 };
 
 /**
+ * Parent path of a dock path: strip the last segment (undefined when already
+ * at the root). Pure + exported for tests.
+ */
+function upPath(p) {
+  if (!p) return undefined;
+  const at = p.lastIndexOf("/");
+  if (at <= 0) return undefined;
+  return p.slice(0, at);
+}
+
+/**
  * DockRoot: the frame's right `details` column occupant. The grid reserves
  * space beside the conversation (no overlay while in-flow); when the column is
  * closed for any reason (blank session, narrow viewport) the dock renders
@@ -277,6 +288,9 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
 
   const src = "/browser/?path=" + (path === undefined ? "" : encodeURIComponent(path)) + "&embed=1";
   const name = path === undefined ? "files root" : basename(path);
+  const nav = (next) => { setPath(next); };
+  // A refresh counter forces the iframe to reload the same path.
+  const [stamp, setStamp] = useState(0);
   return (
     <div
       ref={rootRef}
@@ -289,18 +303,30 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
       <style>{`
         .dshfp-dock{display:flex;flex-direction:column;height:100%;min-width:0;background:var(--dsw-alias-bg-base,#0f1117);color:var(--dsw-alias-label-primary,#eef1f8);font:13px/1.4 ui-monospace,Menlo,Consolas,monospace}
         .dshfp-dock[data-floating]{position:absolute;top:16px;right:16px;bottom:16px;width:360px;z-index:60;border:1px solid var(--dsw-alias-border-l3,rgba(255,255,255,.15));border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden;background:var(--dsw-alias-bg-base,#0f1117)}
-        .dshfp-dock-head{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));flex:none;min-height:34px}
-        .dshfp-dock-head .t{font-weight:600;color:var(--dsw-alias-label-primary,#eef1f8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
-        .dshfp-dock-head button{background:none;border:0;color:var(--dsw-alias-label-secondary,#c7ccd9);cursor:pointer;padding:2px 6px;border-radius:5px;font:inherit;line-height:1}
+        .dshfp-dock-head{display:flex;align-items:center;gap:4px;padding:5px 8px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));flex:none;min-height:34px}
+        .dshfp-dock-head .t{font-weight:600;color:var(--dsw-alias-label-primary,#eef1f8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;padding:0 4px}
+        .dshfp-dock-head button{background:none;border:0;color:var(--dsw-alias-label-secondary,#c7ccd9);cursor:pointer;padding:3px 6px;border-radius:5px;font:inherit;line-height:1;display:inline-flex;align-items:center}
         .dshfp-dock-head button:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-dock-head button:disabled{opacity:.35;cursor:default;background:none}
         .dshfp-dock iframe{flex:1;width:100%;border:0;min-height:0;background:#0f1117}
       `}</style>
       <div className="dshfp-dock-head">
+        <button type="button" title={t?.("dock.home") ?? "Files root"} onClick={() => nav(undefined)}>
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 7 8 2.5 13.5 7"/><path d="M4 6.5V13h8V6.5"/></svg>
+        </button>
+        <button type="button" title={t?.("dock.up") ?? "Up one level"} disabled={!path} onClick={() => nav(upPath(path))}>
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 10.5 8 5.5l5 5"/></svg>
+        </button>
+        <button type="button" title={t?.("dock.reload") ?? "Reload"} onClick={() => setStamp((s) => s + 1)}>
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 3.5V7h-3.5"/><path d="M3 12.5V9h3.5"/><path d="M13 7a5 5 0 0 0-8.5-3.5L3 5M13 9l-1.5 1.5A5 5 0 0 1 3 7"/></svg>
+        </button>
         <span className="t">{t?.("dock.title") ?? "Files"}{path !== undefined ? ` · ${name}` : ""}</span>
-        <button type="button" title={t?.("dock.openTab") ?? "Open in new tab"} onClick={() => window.open(src, "_blank", "noopener")}>↗</button>
-        <button type="button" title={t?.("dock.close") ?? "Close"} onClick={() => toggle(false)}>✕</button>
+        <button type="button" title={t?.("dock.openTab") ?? "Open in new tab"} onClick={() => window.open(src, "_blank", "noopener")}>
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6.5 9.5 13 3"/><path d="M8.5 3H13v4.5"/><path d="M13 9v3.5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5H7"/></svg>
+        </button>
+        <button type="button" title={t?.("dock.close") ?? "Close pane"} onClick={() => toggle(false)}>✕</button>
       </div>
-      <iframe key={src} src={src} title={t?.("dock.title") ?? "File pane"} />
+      <iframe key={path + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
     </div>
   );
 }
@@ -381,8 +407,8 @@ function apply(ctx) {
     return resolvePanePath(cwd, rel);
   };
   ctx.effect(() => ctx.locale.register(NS, {
-    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab" },
-    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开" }
+    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload" },
+    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新" }
   }), "dsh-file-pane: dictionaries");
   // Passive diff spill: agent edit before/after -> host RAM (per open session).
   ctx.conversationEvents.register(makeDiffSpillDefinition(() =>
@@ -432,4 +458,4 @@ function apply(ctx) {
   );
 }
 
-export { LOADER_ID, apply, producedForClosing, selectProducedPane, narrowDiffs, resolvePanePath, isDockMounted };
+export { LOADER_ID, apply, producedForClosing, selectProducedPane, narrowDiffs, resolvePanePath, isDockMounted, upPath };
