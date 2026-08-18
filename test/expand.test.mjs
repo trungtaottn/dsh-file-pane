@@ -6,6 +6,7 @@ import * as path from "node:path";
 import JSZip from "jszip";
 
 import { resolveWithin, readFileResult, mimeFor } from "../lib/view-core.mjs";
+import { paneFileHTML } from "../lib/view-html.mjs";
 import { docxPreview } from "../lib/docx.mjs";
 import { apply as applyHost } from "../lib/index.js";
 
@@ -111,8 +112,13 @@ test("GET ?path=<broken>.docx falls back to 200 HTML (no crash)", async () => {
 	assert.match(r.type, /html/);
 });
 
-test("GET /browser/vendor/pdfjs/pdfjs-viewer-element.js serves the asset", async () => {
-	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-vendor-"));
+test("paneFileHTML PDF render fills the frame (no fixed 78vh)", () => {
+	const html = paneFileHTML({ path: "dir/a.pdf", name: "a.pdf", kind: "pdf", mime: "application/pdf", size: 42 }, true);
+	assert.ok(!html.includes("78vh"), "must not pin the PDF viewer to a fixed 78vh");
+	assert.ok(html.includes('height:100%'), "PDF viewers must fill the frame height");
+});
+
+test("GET /browser/vendor/pdfjs/pdfjs-viewer-element.js serves the asset", async () => {	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-vendor-"));
 	const h = makeHandler(dir);
 	const r = await request(h, "/browser/vendor/pdfjs/pdfjs-viewer-element.js");
 	assert.equal(r.code, 200);
