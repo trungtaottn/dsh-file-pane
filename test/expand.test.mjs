@@ -352,3 +352,18 @@ test("client bundle breadcrumbParts splits path into clickable segments", () => 
 		{ label: "c.md", path: "a/b/c.md" }
 	]);
 });
+
+test("client bundle stripBase removes the workspace base prefix for breadcrumb display", () => {
+	const { stripBase } = loadClientBundle();
+	const base = "/home/kaynt/Code/dsh-file-pane";
+	// at the workspace root → undefined (breadcrumb shows "workspace")
+	assert.equal(stripBase(base, base), undefined);
+	assert.equal(stripBase(undefined, base), undefined);
+	// nested under base → relative spelling
+	assert.equal(stripBase(base + "/src/app.ts", base), "src/app.ts");
+	assert.equal(stripBase(base + "/a/b/c.md", base), "a/b/c.md");
+	// no base → path unchanged
+	assert.equal(stripBase("src/app.ts", undefined), "src/app.ts");
+	// path outside base → unchanged (fallback)
+	assert.equal(stripBase("/opt/other/x.ts", base), "/opt/other/x.ts");
+});

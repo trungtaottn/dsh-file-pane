@@ -252,6 +252,19 @@ function breadcrumbParts(p) {
   return out;
 }
 
+/**
+ * Strip the workspace base prefix from an absolute dock path, returning the
+ * workspace-relative spelling suitable for the breadcrumb/Up display. When
+ * `base` is unknown or `p` lies outside it, `p` is returned unchanged. Pure.
+ */
+function stripBase(p, base) {
+  if (!p) return undefined;
+  if (!base) return p;
+  if (p === base) return undefined;
+  if (p.startsWith(base + "/")) return p.slice(base.length + 1);
+  return p;
+}
+
 /** Dock last-location persist key (path + optional session, so diff works on reopen). */
 const DOCK_STATE_KEY = "dsh.filePane.state";
 
@@ -366,7 +379,7 @@ function Breadcrumb({ path, onNavigate }) {
  * absolute at the right edge instead of vanishing (floating fallback), like
  * dsh-better-sidebar-lite.
  */
-function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces, layout, getSession }) {
+function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces, layout, getSession, getCwd }) {
   const rootRef = useRef(null);
   const [path, setPath] = useState(undefined); // undefined → root listing
   const [session, setSession] = useState(undefined);
@@ -435,9 +448,17 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   if (!open) return null;
 
   const effSession = session ?? (typeof getSession === "function" ? getSession() : undefined);
-  const src = dockSrc(path, { diff, session: effSession });
-  const needSessionNote = diff && isTextPath(path) && effSession === undefined;
+  // Workspace base = the current session's cwd (the folder being worked on).
+  // The file tree + Home root here instead of the host root ($HOME) so the dock
+  // shows only the active workspace, not the whole hosting machine.
+  const base = typeof getCwd === "function" ? getCwd() : undefined;
+  const viewPath = path ?? base; // undefined path → the workspace root listing
+  const src = dockSrc(viewPath, { diff, session: effSession });
+  const needSessionNote = diff && isTextPath(viewPath) && effSession === undefined;
   const nav = (next) => { setPath(next); }; // navigating resets diff
+  const relC = stripBase(viewPath, base);    // path relative to the workspace (for breadcrumb/Up)
+  const upRel = upPath(relC);                // parent relative to the workspace (undefined = at base)
+  const navClose = (rel) => nav(base && rel ? base + "/" + rel.replace(/^\/+/, "") : base ?? undefined);
   return (
     <div
       ref={rootRef}
@@ -477,16 +498,16 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-crumb-cur{color:var(--dsw-alias-label-primary,#eef1f8);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       `}</style>
       <div className="dshfp-dock-head">
-        <button type="button" title={t?.("dock.home") ?? "Files root"} onClick={() => { nav(undefined); setDiff(false); }}>
+        <button type="button" title={t?.("dock.home") ?? "Files root"} onClick={() => { nav(base); setDiff(false); }}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 7 8 2.5 13.5 7"/><path d="M4 6.5V13h8V6.5"/></svg>
         </button>
-        <button type="button" title={t?.("dock.up") ?? "Up one level"} disabled={!path} onClick={() => { nav(upPath(path)); setDiff(false); }}>
+        <button type="button" title={t?.("dock.up") ?? "Up one level"} disabled={!path || !upRel} onClick={() => { nav(navClose(upRel)); setDiff(false); }}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 10.5 8 5.5l5 5"/></svg>
         </button>
         <button type="button" title={t?.("dock.reload") ?? "Reload"} onClick={() => setStamp((s) => s + 1)}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 3.5V7h-3.5"/><path d="M3 12.5V9h3.5"/><path d="M13 7a5 5 0 0 0-8.5-3.5L3 5M13 9l-1.5 1.5A5 5 0 0 1 3 7"/></svg>
         </button>
-        <Breadcrumb path={path} onNavigate={(p) => { setPath(p); setDiff(false); }} />
+        <Breadcrumb path={relC} onNavigate={(rel) => { nav(navClose(rel)); setDiff(false); }} />
         <button type="button" title={t?.("dock.tree") ?? "Toggle file tree"} data-on={showTree || undefined} onClick={() => setShowTree((v) => !v)}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 3.5h4v3H3z"/><path d="M9 9.5h4v3H9z"/><path d="M5 6.5v3M11 6.5v3M5 6.5h6"/></svg>
         </button>
@@ -502,7 +523,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
       <div className="dshfp-dock-body">
         {showTree ? (
           <nav className="dshfp-dock-tree" aria-label={t?.("dock.tree") ?? "File tree"}>
-            <FileTree path={undefined} onOpen={(p) => { setPath(p); setDiff(false); }} activePath={path} />
+            <FileTree path={base} onOpen={(p) => { setPath(p); setDiff(false); }} activePath={viewPath} />
           </nav>
         ) : null}
         <iframe key={path + ":" + diff + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
@@ -520,6 +541,7 @@ function createDockEntry(services) {
       useWorkspaces={props.useWorkspaces}
       layout={services.layout}
       getSession={services.getSession}
+      getCwd={services.getCwd}
     />
   );
 }
@@ -595,16 +617,18 @@ function apply(ctx) {
   const getSession = () => {
     try { return sessions?.list?.getSnapshot?.().current; } catch { return undefined; }
   };
-  const resolvePath = (rel) => {
-    let cwd;
+  // The currently open session's working directory — the workspace being worked
+  // on. Used to root the dock file tree (and produced-path resolution) at the
+  // active workspace instead of the host root ($HOME).
+  const getCwd = () => {
     try {
       const snapshot = sessions?.list?.getSnapshot?.();
       const current = snapshot?.current;
       const entry = current != null ? snapshot?.entries?.find((e) => e.id === current) : undefined;
-      cwd = entry?.cwd;
-    } catch { /* keep undefined → fall back to raw relative path */ }
-    return resolvePanePath(cwd, rel);
+      return entry?.cwd;
+    } catch { return undefined; }
   };
+  const resolvePath = (rel) => resolvePanePath(getCwd(), rel);
   ctx.effect(() => ctx.locale.register(NS, {
     en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.tree": "Toggle file tree", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first." },
     zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.tree": "切换文件树", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件" }
@@ -626,7 +650,7 @@ function apply(ctx) {
   // In-app dock: own the frame's right details column. priority -1 shadows the
   // built-in DetailsPanel (tool details); inject (not bare register) rides the
   // declaration lifetime — re-registers after the declaring slot is restored.
-  const DockEntry = createDockEntry({ t: ctx.locale.bind(NS), layout, getSession });
+  const DockEntry = createDockEntry({ t: ctx.locale.bind(NS), layout, getSession, getCwd });
   slots.inject("details", () =>
     slots.register({ name: "details", priority: -1, locale: NS }, DockEntry)
   );
@@ -655,4 +679,4 @@ function apply(ctx) {
   );
 }
 
-export { LOADER_ID, apply, producedForClosing, selectProducedPane, narrowDiffs, resolvePanePath, isDockMounted, upPath, dockSrc, breadcrumbParts };
+export { LOADER_ID, apply, producedForClosing, selectProducedPane, narrowDiffs, resolvePanePath, isDockMounted, upPath, dockSrc, breadcrumbParts, stripBase };
