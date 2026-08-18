@@ -56,6 +56,23 @@ function installedVersion(profileDir) {
   try { return requireLocal(pkgPath).version; } catch { return null; }
 }
 
+/**
+ * Whether the profile's package.json dependency already points at the same
+ * tarball as `tag`. Comparison is by cached-tarball path (NOT by version
+ * string): hand-made beta releases may leave version "0.1.0" in the packed
+ * package.json even though the tag is "v0.2.0-beta.2", so a version compare
+ * would re-install forever. Checking the `file:` dependency path against the
+ * stable cache file for the newest tag is what makes deploy-local idempotent.
+ */
+function isUpToDate(profileDir, tag, cacheFile) {
+  const depPath = join(profileDir, "package.json");
+  if (!existsSync(depPath)) return false;
+  try {
+    const dep = requireLocal(depPath).dependencies?.["dsh-file-pane"];
+    return typeof dep === "string" && dep === `file:${cacheFile}` && existsSync(cacheFile);
+  } catch { return false; }
+}
+
 /** Install the tarball for `tag` into the profile dir. */
 function installTarball(profileDir, tag) {
   // Persist the tarball under a stable cache dir (not /tmp) so the recorded
@@ -77,13 +94,13 @@ function installTarball(profileDir, tag) {
 function main() {
   const tag = latestBetaTag();
   if (!tag) { console.log("No beta release found on GitHub — nothing to do."); return; }
-  const betaVersion = tag.slice(1); // v0.2.0-beta.1 -> 0.2.0-beta.1
+  const cacheFile = join(process.env.HOME, ".dsh", "tarballs", `dsh-file-pane-${tag.slice(1)}.tgz`);
   const installed = installedVersion(PROFILE_DIR);
 
   console.log(`Latest beta on GitHub: ${tag} | installed in "${PROFILE}": ${installed ?? "(none)"}`);
 
-  if (installed === betaVersion) {
-    console.log("Already up to date.");
+  if (isUpToDate(PROFILE_DIR, tag, cacheFile)) {
+    console.log(`Already up to date (${PROFILE} pinned to ${tag}).`);
     return;
   }
   if (!existsSync(PROFILE_DIR)) {
