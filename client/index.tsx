@@ -398,6 +398,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const [open, setOpen] = useState(readDockOpen);
   const [showTree, setShowTree] = useState(true);
   const [treeHover, setTreeHover] = useState(false); // hover-reveal popup (file open, tree hidden)
+  const [hoverAct, setHoverAct] = useState(null); // which activity the popup follows while hovering the rail (null=follow current view)
   const [stamp, setStamp] = useState(0);
   const [changeView, setChangeView] = useState(false); // sidebar shows Changes (VSCode Source-Control style) vs the file tree
   const [changed, setChanged] = useState([]);
@@ -518,7 +519,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-rail{width:30px;flex:none;display:flex;flex-direction:column;align-items:center;gap:3px;padding:5px 0;border-right:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));background:var(--dsw-alias-bg-base,#0f1117);overflow:hidden}
         .dshfp-act{background:none;border:0;color:var(--dsw-alias-label-tertiary,#9aa3b5);cursor:pointer;padding:3px 5px;border-radius:5px;display:inline-flex;align-items:center;flex:none;line-height:1}
         .dshfp-act:hover{color:var(--dsw-alias-label-primary,#eef1f8);background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
-        .dshfp-act[data-on]{color:var(--dsw-alias-state-business-primary,#5b96ff);background:var(--dsw-alias-state-business-primary,rgba(91,150,255,.14))}
+        .dshfp-act[data-on]{color:var(--dsw-alias-state-business-primary,#5b96ff);background:transparent;box-shadow:inset 2px 0 0 var(--dsw-alias-state-business-primary,#5b96ff)}
         .dshfp-sp{flex:1}
         .dshfp-panel{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
         .dshfp-panel .dshfp-dock-tree{width:100%;min-width:0;flex:1;border-right:0;overflow:auto}
@@ -573,13 +574,13 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         <div
           className={"dshfp-side" + (showTree ? "" : " closed")}
           onMouseEnter={() => { if (!showTree) setTreeHover(true); }}
-          onMouseLeave={() => setTreeHover(false)}
+          onMouseLeave={() => { setTreeHover(false); setHoverAct(null); }}
         >
           <div className="dshfp-rail">
-            <button type="button" className="dshfp-act" data-on={!changeView || undefined} title={t?.("dock.files") ?? "Files"} onClick={() => onAct(false)}>
+            <button type="button" className="dshfp-act" onMouseEnter={() => setHoverAct(false)} data-on={!changeView || undefined} title={t?.("dock.files") ?? "Files"} onClick={() => onAct(false)}>
               <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 2H13a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/></svg>
             </button>
-            <button type="button" className="dshfp-act" data-on={changeView || undefined} title={t?.("dock.git") ?? "Git / Changes"} onClick={() => onAct(true)}>
+            <button type="button" className="dshfp-act" onMouseEnter={() => setHoverAct(true)} data-on={changeView || undefined} title={t?.("dock.git") ?? "Git / Changes"} onClick={() => onAct(true)}>
               <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h4M4 8h4M4 12h4"/><path d="M12 3.5v9"/><path d="M10.5 5.5 12 4l1.5 1.5M10.5 10.5 12 12l1.5-1.5"/></svg>
             </button>
             <span className="dshfp-sp" />
@@ -612,7 +613,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
           ) : (
             treeHover ? (
               <nav className="dshfp-dock-tree dshfp-tree-pop" aria-label={t?.("dock.tree") ?? "File tree"}>
-                {changeView
+                {(hoverAct ?? changeView)
                   ? changed.length === 0
                     ? <div className="dshfp-tree-empty">( none changed yet )</div>
                     : changed.map((c) => (
