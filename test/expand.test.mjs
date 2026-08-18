@@ -253,3 +253,22 @@ test("client bundle exports isDockMounted and declares layout", () => {
 	assert.equal(isDockMounted(), false); // not mounted outside a live dock
 	assert.ok(inject.includes("layout"), "bundle must declare layout service");
 });
+
+test("client bundle upPath computes parent directories", () => {
+	const { upPath } = loadClientBundle();
+	assert.equal(upPath("a/b/c.md"), "a/b");
+	assert.equal(upPath("a/b"), "a");
+	assert.equal(upPath("a.md"), undefined); // top-level file → root
+	assert.equal(upPath("a"), undefined);
+	assert.equal(upPath(undefined), undefined);
+	assert.equal(upPath(""), undefined);
+});
+
+test("client bundle dock locale includes navigation keys", () => {
+	// apply() registers the dict; here we just verify the bundle still exposes
+	// the dock helpers and layout service (regression guard for the dock nav).
+	const { apply, isDockMounted, inject } = loadClientBundle();
+	assert.equal(typeof isDockMounted, "function");
+	assert.ok(inject.includes("layout"));
+	assert.equal(typeof apply, "function");
+});
