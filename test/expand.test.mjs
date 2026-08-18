@@ -272,3 +272,83 @@ test("client bundle dock locale includes navigation keys", () => {
 	assert.ok(inject.includes("layout"));
 	assert.equal(typeof apply, "function");
 });
+
+test("client bundle dockSrc builds session/diff/embed query", () => {
+	const { dockSrc } = loadClientBundle();
+	// plain view of a text file
+	const view = dockSrc("src/app.ts");
+	assert.equal(view, "/browser/?path=src%2Fapp.ts&embed=1");
+	// diff of a text file carries session
+	const diff = dockSrc("src/app.ts", { diff: true, session: "S1" });
+	assert.equal(diff, "/browser/?path=src%2Fapp.ts&diff=1&session=S1&embed=1");
+	// diff of a binary/non-text path does NOT add diff (route would 415)
+	const bin = dockSrc("img/logo.png", { diff: true, session: "S1" });
+	assert.ok(!bin.includes("diff=1"), "non-text path must not request diff");
+	assert.equal(bin, "/browser/?path=img%2Flogo.png&embed=1");
+	// root listing
+	const root = dockSrc(undefined);
+	assert.equal(root, "/browser/?path=&embed=1");
+});
+
+test("client bundle upPath computes parent directories", () => {
+	const { upPath } = loadClientBundle();
+	assert.equal(upPath("a/b/c.md"), "a/b");
+	assert.equal(upPath("a/b"), "a");
+	assert.equal(upPath("a.md"), undefined); // top-level file → root
+	assert.equal(upPath("a"), undefined);
+	assert.equal(upPath(undefined), undefined);
+	assert.equal(upPath(""), undefined);
+});
+
+test("GET ?path=...&json=1 returns directory listing as JSON", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-json-"));
+	await fs.mkdir(path.join(dir, "sub"));
+	await fs.writeFile(path.join(dir, "a.md"), "x");
+	await fs.writeFile(path.join(dir, "b.ts"), "y");
+	const h = makeHandler(dir);
+	const r = await request(h, "/browser/?path=&json=1");
+	assert.equal(r.code, 200);
+	assert.match(r.type, /json/);
+	const data = JSON.parse(r.body);
+	assert.ok(Array.isArray(data.entries));
+	const names = data.entries.map((e) => e.name);
+	assert.ok(names.includes("a.md"));
+	assert.ok(names.includes("b.ts"));
+	const sub = data.entries.find((e) => e.name === "sub");
+	assert.equal(sub.dir, true);
+});
+
+test("json listing guards root escape (403)", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-json-"));
+	const h = makeHandler(dir);
+	const r = await request(h, "/browser/?path=" + encodeURIComponent("../../etc") + "&json=1");
+	assert.equal(r.code, 403);
+});
+
+test("json listing for a file returns 400 (not a directory)", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-json-"));
+	await fs.writeFile(path.join(dir, "a.md"), "x");
+	const h = makeHandler(dir);
+	const r = await request(h, "/browser/?path=a.md&json=1");
+	assert.equal(r.code, 400);
+});
+
+test("client bundle breadcrumbParts splits path into clickable segments", () => {
+	const { breadcrumbParts } = loadClientBundle();
+	// root
+	assert.deepEqual(breadcrumbParts(undefined), [{ label: "workspace", path: undefined }]);
+	assert.deepEqual(breadcrumbParts(""), [{ label: "workspace", path: undefined }]);
+	// single segment
+	assert.deepEqual(breadcrumbParts("a.md"), [{ label: "a.md", path: "a.md" }]);
+	// nested: each prefix is the clickable ancestor
+	assert.deepEqual(breadcrumbParts("src/app.ts"), [
+		{ label: "src", path: "src" },
+		{ label: "app.ts", path: "src/app.ts" }
+	]);
+	const deep = breadcrumbParts("a/b/c.md");
+	assert.deepEqual(deep, [
+		{ label: "a", path: "a" },
+		{ label: "b", path: "a/b" },
+		{ label: "c.md", path: "a/b/c.md" }
+	]);
+});

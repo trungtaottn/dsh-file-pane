@@ -33,6 +33,19 @@ Two halves of one cordis plugin (like dsh-better-sidebar-lite):
   only for verify; test changes in a sandbox profile (:3090) first.
 - `web_search` WORKS (has key) — research online is fine.
 
+## Testing rule (IMPORTANT)
+
+- **Always test on a SANDBOX profile, NEVER on production.** Production is the
+  live systemd service `deepseek-harness-web` on port 3080 — never restart it,
+  never install/verify experimental builds against it, and never point dev
+  builds at it.
+- Sandbox loop: build locally → run unit tests (`NODE_OPTIONS= npm test`) →
+  boot a separate sandbox profile on its own port (e.g. :3090) → verify there →
+  only then open a PR. See `HANDOFF-next-session.md` for the sandbox profile
+  recipe.
+- If you must sanity-check the served bundle, verify content/auth on the sandbox
+  port, and compare bundle hashes locally — do not mutate production.
+
 ## Commands (dev loop)
 
 ```sh
@@ -67,6 +80,17 @@ release.config.mjs   semantic-release, GitHub-only (npmPublish:false)
   hotfixes, still via PR).
 - **Feature branches** branch from `dev` (e.g. `feat/<name>`), and merge **back
   into dev via PR** — never push directly to dev or main.
+- **Pull before every task**: before starting ANY task, sync with the freshest
+  dev first (`git checkout dev && git pull origin dev`), then branch from it.
+  Never start from a stale branch.
+- **One branch per task; chain branches to avoid conflicts.** When many tasks
+  are developed in one batch before a single PR, create a chain: task's branch
+  `feat/b` branches off the PREVIOUS task's branch `feat/a` (not off `dev`
+  again). This keeps merge conflicts away when the chain of PRs lands. Merge
+  order matters: `feat/a` → dev first, then `feat/b` → dev, etc. Prefer merging
+  each into dev in order so each PR is small and reviewable.
+- When doing one big batch on a single long-running branch, rebase it onto the
+  latest dev before opening the PR.
 - Conventional commits (`feat:`, `fix:`, `chore:`, `ci:`, `docs:`); `feat`/`fix`
   on main trigger a release.
 - **Release = GitHub-only** (no npm): `release.config.mjs` uses
@@ -76,10 +100,20 @@ release.config.mjs   semantic-release, GitHub-only (npmPublish:false)
   packed tarball. No NPM_TOKEN. On `dev` it makes prereleases `vX.Y.Z-beta.N`.
 - Seed tag `v0.0.0` sits on the squash commit so the first release is `0.1.0`.
 
-### Branch protection reminder
-`squash merge` (or at least: PRs only) on both `main` and `dev` is recommended
-via GitHub Settings → Branches → Add rule. Prefer **squash** when merging
-feature branches into dev to keep history clean.
+### Branch protection (enabled)
+Both `main` and `dev` require: 1 approving PR review + status checks (CI pass),
+no force-push, no deletion. Every change lands via a reviewed PR.
+
+### Banch chain example
+```
+dev ───────────────► (merged)
+ │
+ ├── feat/a ───────► PR #1 → dev
+ │      │
+ │      └── feat/b ────► PR #2 → dev   (branched off feat/a, not dev)
+ │             │
+ │             └── feat/c ─► PR #3 → dev
+```
 
 ## Design & security constraints
 
