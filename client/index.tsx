@@ -384,11 +384,11 @@ function Breadcrumb({ path, onNavigate }) {
 }
 
 /**
- * DockRoot: the frame's right `details` column occupant. The grid reserves
- * space beside the conversation (no overlay while in-flow); when the column is
- * closed for any reason (blank session, narrow viewport) the dock renders
- * absolute at the right edge instead of vanishing (floating fallback), like
- * dsh-better-sidebar-lite.
+ * DockRoot: the frame's right `details` column occupant (in-flow). The DSH
+ * AppFrame reserves this column beside the conversation, so the conversation
+ * resizes around the dock instead of it overlaying the UI — consistent with the
+ * native DSH look. Contains a workspace-rooted file tree, breadcrumb nav, diff,
+ * and the session changed-files list.
  */
 function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces, layout, getSession, getCwd }) {
   const rootRef = useRef(null);
