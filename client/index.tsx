@@ -235,6 +235,23 @@ function upPath(p) {
   return p.slice(0, at);
 }
 
+/**
+ * Split a path into clickable breadcrumb segments. Returns an array of
+ * { label, path } where `path` is the clickable ancestor prefix (undefined for
+ * the workspace root). Pure + exported for tests.
+ */
+function breadcrumbParts(p) {
+  if (!p) return [{ label: "workspace", path: undefined }];
+  const out = [];
+  const segs = p.split("/");
+  let acc = "";
+  for (let i = 0; i < segs.length; i++) {
+    acc = i === 0 ? segs[i] : acc + "/" + segs[i];
+    out.push({ label: segs[i], path: acc });
+  }
+  return out;
+}
+
 /** Dock last-location persist key (path + optional session, so diff works on reopen). */
 const DOCK_STATE_KEY = "dsh.filePane.state";
 
@@ -267,7 +284,7 @@ async function fetchListing(path) {
  * clicking a directory fetch+expands its children; clicking a file loads it
  * in the iframe. Sorted dirs-first, matching the pane listing.
  */
-function FileTree({ path, onOpen, depth = 0 }) {
+function FileTree({ path, onOpen, activePath, depth = 0 }) {
   const [rows, setRows] = useState(null); // null = loading, [] = loaded
   const [open, setOpen] = useState(depth === 0); // root auto-expanded
   const [err, setErr] = useState(false);
@@ -300,10 +317,10 @@ function FileTree({ path, onOpen, depth = 0 }) {
             {rows === null && !err ? <li className="dshfp-tree-empty">( loading… )</li> : null}
             {(rows ?? []).map((e) => {
               const childPath = path ? path + "/" + e.name : e.name;
-              if (e.dir) return <FileTree key={childPath} path={childPath} onOpen={onOpen} depth={depth + 1} />;
+              if (e.dir) return <FileTree key={childPath} path={childPath} onOpen={onOpen} activePath={activePath} depth={depth + 1} />;
               return (
                 <li key={childPath} className="dshfp-tree-row">
-                  <button className="dshfp-tree-node" type="button" data-file="1" onClick={() => onOpen(childPath)}>
+                  <button className="dshfp-tree-node" type="button" data-file="1" data-active={childPath === activePath || undefined} onClick={() => onOpen(childPath)}>
                     <span className="chev">·</span>
                     <span className="nm">{e.name}</span>
                   </button>
@@ -315,6 +332,30 @@ function FileTree({ path, onOpen, depth = 0 }) {
         ) : null}
       </li>
     </ul>
+  );
+}
+
+/** Clickable path breadcrumb for the dock header (workspace / a / b / file). */
+function Breadcrumb({ path, onNavigate }) {
+  const parts = breadcrumbParts(path);
+  return (
+    <span className="dshfp-crumb" title={path ?? "workspace"}>
+      {parts.map((part, i) => {
+        const last = i === parts.length - 1;
+        return (
+          <span key={part.path ?? "root"} className="dshfp-crumb-part">
+            {i > 0 ? <span className="dshfp-crumb-sep">/</span> : null}
+            {last ? (
+              <span className="dshfp-crumb-cur">{part.label}</span>
+            ) : (
+              <button type="button" className="dshfp-crumb-link" onClick={() => onNavigate(part.path)}>
+                {part.label}
+              </button>
+            )}
+          </span>
+        );
+      })}
+    </span>
   );
 }
 
@@ -396,7 +437,6 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const effSession = session ?? (typeof getSession === "function" ? getSession() : undefined);
   const src = dockSrc(path, { diff, session: effSession });
   const needSessionNote = diff && isTextPath(path) && effSession === undefined;
-  const name = path === undefined ? "files root" : basename(path);
   const nav = (next) => { setPath(next); }; // navigating resets diff
   return (
     <div
@@ -425,9 +465,16 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-tree-row .dshfp-tree-row{padding-left:2px}
         .dshfp-tree-node{display:flex;align-items:center;gap:4px;width:100%;background:none;border:0;color:var(--dsw-alias-label-secondary,#c7ccd9);cursor:pointer;padding:2px 6px;border-radius:4px;text-align:left;font:inherit;font-size:12px;line-height:1.5;overflow:hidden;white-space:nowrap}
         .dshfp-tree-node:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-tree-node[data-active]{background:var(--dsw-alias-state-business-primary,rgba(91,150,255,.18));color:var(--dsw-alias-label-primary,#eef1f8)}
         .dshfp-tree-node .chev{flex:none;width:10px;color:var(--dsw-alias-label-tertiary,#9aa3b5)}
         .dshfp-tree-node .nm{overflow:hidden;text-overflow:ellipsis}
         .dshfp-tree-empty{color:var(--dsw-alias-label-tertiary,#9aa3b5);font-size:11px;padding:1px 8px}
+        .dshfp-crumb{display:flex;align-items:center;gap:0;padding:0 4px;min-width:0;overflow:hidden;flex:1}
+        .dshfp-crumb-part{display:inline-flex;align-items:center;gap:0;min-width:0}
+        .dshfp-crumb-sep{color:var(--dsw-alias-label-tertiary,#9aa3b5);opacity:.7;padding:0 3px}
+        .dshfp-crumb-link{background:none;border:0;color:var(--dsw-alias-label-secondary,#c7ccd9);cursor:pointer;font:inherit;line-height:1.3;padding:1px 3px;border-radius:4px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .dshfp-crumb-link:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-crumb-cur{color:var(--dsw-alias-label-primary,#eef1f8);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       `}</style>
       <div className="dshfp-dock-head">
         <button type="button" title={t?.("dock.home") ?? "Files root"} onClick={() => { nav(undefined); setDiff(false); }}>
@@ -439,7 +486,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         <button type="button" title={t?.("dock.reload") ?? "Reload"} onClick={() => setStamp((s) => s + 1)}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 3.5V7h-3.5"/><path d="M3 12.5V9h3.5"/><path d="M13 7a5 5 0 0 0-8.5-3.5L3 5M13 9l-1.5 1.5A5 5 0 0 1 3 7"/></svg>
         </button>
-        <span className="t">{t?.("dock.title") ?? "Files"}{path !== undefined ? ` · ${name}` : ""}</span>
+        <Breadcrumb path={path} onNavigate={(p) => { setPath(p); setDiff(false); }} />
         <button type="button" title={t?.("dock.tree") ?? "Toggle file tree"} data-on={showTree || undefined} onClick={() => setShowTree((v) => !v)}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 3.5h4v3H3z"/><path d="M9 9.5h4v3H9z"/><path d="M5 6.5v3M11 6.5v3M5 6.5h6"/></svg>
         </button>
@@ -455,7 +502,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
       <div className="dshfp-dock-body">
         {showTree ? (
           <nav className="dshfp-dock-tree" aria-label={t?.("dock.tree") ?? "File tree"}>
-            <FileTree path={undefined} onOpen={(p) => { setPath(p); setDiff(false); }} />
+            <FileTree path={undefined} onOpen={(p) => { setPath(p); setDiff(false); }} activePath={path} />
           </nav>
         ) : null}
         <iframe key={path + ":" + diff + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
@@ -608,4 +655,4 @@ function apply(ctx) {
   );
 }
 
-export { LOADER_ID, apply, producedForClosing, selectProducedPane, narrowDiffs, resolvePanePath, isDockMounted, upPath, dockSrc };
+export { LOADER_ID, apply, producedForClosing, selectProducedPane, narrowDiffs, resolvePanePath, isDockMounted, upPath, dockSrc, breadcrumbParts };

@@ -332,3 +332,23 @@ test("json listing for a file returns 400 (not a directory)", async () => {
 	const r = await request(h, "/browser/?path=a.md&json=1");
 	assert.equal(r.code, 400);
 });
+
+test("client bundle breadcrumbParts splits path into clickable segments", () => {
+	const { breadcrumbParts } = loadClientBundle();
+	// root
+	assert.deepEqual(breadcrumbParts(undefined), [{ label: "workspace", path: undefined }]);
+	assert.deepEqual(breadcrumbParts(""), [{ label: "workspace", path: undefined }]);
+	// single segment
+	assert.deepEqual(breadcrumbParts("a.md"), [{ label: "a.md", path: "a.md" }]);
+	// nested: each prefix is the clickable ancestor
+	assert.deepEqual(breadcrumbParts("src/app.ts"), [
+		{ label: "src", path: "src" },
+		{ label: "app.ts", path: "src/app.ts" }
+	]);
+	const deep = breadcrumbParts("a/b/c.md");
+	assert.deepEqual(deep, [
+		{ label: "a", path: "a" },
+		{ label: "b", path: "a/b" },
+		{ label: "c.md", path: "a/b/c.md" }
+	]);
+});
