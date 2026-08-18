@@ -282,6 +282,31 @@ function persistDockState(state) {
   try { localStorage.setItem(DOCK_STATE_KEY, JSON.stringify({ path: state.path ?? "", session: state.session ?? "" })); } catch { /* quota */ }
 }
 
+/** Dock floating width persist key. */
+const DOCK_WIDTH_KEY = "dsh.filePane.width";
+
+/** Read the persisted floating dock width (px), clamped to a sane range. */
+function readDockWidth() {
+  if (typeof localStorage === "undefined") return 380;
+  try {
+    const raw = localStorage.getItem(DOCK_WIDTH_KEY);
+    const n = raw != null ? parseInt(raw, 10) : 380;
+    if (!Number.isFinite(n) || n <= 0) return 380;
+    return Math.min(760, Math.max(300, n)); // 300..760px (≤ half of a 1520px+ tab)
+  } catch { return 380; }
+}
+
+function persistDockWidth(w) {
+  if (typeof localStorage === "undefined") return;
+  try { localStorage.setItem(DOCK_WIDTH_KEY, String(w)); } catch { /* quota */ }
+}
+
+/** Clamp a requested dock width into [300, 50% of the viewport]. */
+function clampDockWidth(px, viewport) {
+  if (!Number.isFinite(px)) return 380;
+  return Math.max(300, Math.min(Math.max(300, Math.round(viewport * 0.5)), Math.round(px)));
+}
+
 /** Fetch a directory listing as JSON (same origin). Returns entries or null. */
 async function fetchListing(path) {
   try {
@@ -386,26 +411,42 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const [diff, setDiff] = useState(false); // false = view, true = version diff
   const [open, setOpen] = useState(readDockOpen);
   const [showTree, setShowTree] = useState(true);
-  const [floating, setFloating] = useState(false);
+  const [width, setWidth] = useState(readDockWidth);
   const [stamp, setStamp] = useState(0);
 
   // Restore the last docked path/session once (before any user open).
   const seeded = useRef(false);
 
-  // Track whether the details column has real width (AppFrame gates it on a
-  // current non-blank session + viewport). When closed while open → float.
-  useEffect(() => {
-    const el = rootRef.current?.parentElement?.parentElement;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const read = () => { setFloating(el.getBoundingClientRect().width === 0); };
-    read();
-    const obs = new ResizeObserver(read);
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, []);
+  // Drag to resize the floating dock's width (left edge handle). Clamp to
+  // [300, 50% viewport]; persist on release.
+  const resizeRef = useRef(null);
+  const onResizeStart = (e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = width;
+    const onMove = (ev) => {
+      const viewport = window.innerWidth;
+      const next = clampDockWidth(startW + (startX - ev.clientX), viewport);
+      setWidth(next);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      resizeRef.current = null;
+      persistDockWidth(width); // NOTE: `width` on release may lag; persist below too
+      setWidth((w) => { persistDockWidth(w); return w; });
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    resizeRef.current = { onUp };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
 
-  // Open/close via the layout store; persist preference. On mount, open the
-  // column if we default to open (matches the source plugin).
+  // Open/close via local state + persistence; a floating dock owns its own
+  // visibility (no details-column layout to drive).
   useEffect(() => {
     dockMounted = true;
     const initial = readDockState();
@@ -415,35 +456,33 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
       setSession(initial.session);
       setDiff(false);
     }
-    if (open) layout?.openDetails?.();
     const onOpen = (e) => {
       const p = e.detail?.path;
       const s = e.detail?.session;
       seeded.current = true;
       setPath(p); setSession(s); setDiff(false);
       persistDockState({ path: p, session: s });
-      setOpen(true); persistDockOpen(true); layout?.openDetails?.();
+      setOpen(true); persistDockOpen(true);
     };
     window.addEventListener(DOCK_OPEN_EVENT, onOpen);
     return () => { dockMounted = false; window.removeEventListener(DOCK_OPEN_EVENT, onOpen); };
-  }, [layout]);
+  }, []);
 
   const toggle = useCallback((next) => {
     setOpen(next); persistDockOpen(next);
-    if (next) layout?.openDetails?.(); else layout?.closeDetails?.();
-  }, [layout]);
+  }, []);
 
   // Ctrl/Cmd+Shift+B toggles the dock.
   useEffect(() => {
     const onKey = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === "KeyB") {
         e.preventDefault();
-        setOpen((o) => { const next = !o; persistDockOpen(next); if (next) layout?.openDetails?.(); else layout?.closeDetails?.(); return next; });
+        setOpen((o) => { const next = !o; persistDockOpen(next); return next; });
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [layout]);
+  }, []);
 
   if (!open) return null;
 
@@ -463,14 +502,15 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
     <div
       ref={rootRef}
       data-dsh-file-pane-dock="1"
-      data-floating={floating || undefined}
       role="region"
       aria-label={t?.("dock.title") ?? "File pane"}
       className="dshfp-dock"
+      style={{ width }}
     >
       <style>{`
-        .dshfp-dock{display:flex;flex-direction:column;height:100%;min-width:0;background:var(--dsw-alias-bg-base,#0f1117);color:var(--dsw-alias-label-primary,#eef1f8);font:13px/1.4 ui-monospace,Menlo,Consolas,monospace}
-        .dshfp-dock[data-floating]{position:absolute;top:16px;right:16px;bottom:16px;width:360px;z-index:60;border:1px solid var(--dsw-alias-border-l3,rgba(255,255,255,.15));border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden;background:var(--dsw-alias-bg-base,#0f1117)}
+        .dshfp-dock{display:flex;flex-direction:column;min-width:0;position:fixed;top:0;right:0;bottom:0;z-index:60;overflow:hidden;background:var(--dsw-alias-bg-base,#0f1117);color:var(--dsw-alias-label-primary,#eef1f8);font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;border-left:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));box-shadow:-8px 0 30px rgba(0,0,0,.28)}
+        .dshfp-dock-resize{position:absolute;left:0;top:0;bottom:0;width:6px;cursor:col-resize;z-index:5;touch-action:none}
+        .dshfp-dock-resize:hover{background:var(--dsw-alias-state-business-primary,rgba(91,150,255,.35))}
         .dshfp-dock-head{display:flex;align-items:center;gap:4px;padding:5px 8px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));flex:none;min-height:34px;flex-wrap:wrap}
         .dshfp-dock-head .t{font-weight:600;color:var(--dsw-alias-label-primary,#eef1f8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;padding:0 4px}
         .dshfp-dock-head button{background:none;border:0;color:var(--dsw-alias-label-secondary,#c7ccd9);cursor:pointer;padding:3px 6px;border-radius:5px;font:inherit;line-height:1;display:inline-flex;align-items:center}
@@ -497,6 +537,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-crumb-link:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
         .dshfp-crumb-cur{color:var(--dsw-alias-label-primary,#eef1f8);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       `}</style>
+      <div className="dshfp-dock-resize" title="Drag to resize" onMouseDown={onResizeStart} />
       <div className="dshfp-dock-head">
         <button type="button" title={t?.("dock.home") ?? "Files root"} onClick={() => { nav(base); setDiff(false); }}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 7 8 2.5 13.5 7"/><path d="M4 6.5V13h8V6.5"/></svg>
@@ -647,12 +688,14 @@ function apply(ctx) {
       ProducedPaneRow
     )
   );
-  // In-app dock: own the frame's right details column. priority -1 shadows the
-  // built-in DetailsPanel (tool details); inject (not bare register) rides the
-  // declaration lifetime — re-registers after the declaring slot is restored.
+  // In-app dock: a floating resizable panel registered into DSH's `shell.overlay`
+  // list slot (z-index-20 layer; adds a pointer-events-auto child). This is the
+  // documented seam for custom dock/inspector surfaces and is NOT capped by the
+  // host's details-column clamp (300–520px), so the pane can be widened up to
+  // ~half the tab. The details column stays with DSH's built-in DetailsPanel.
   const DockEntry = createDockEntry({ t: ctx.locale.bind(NS), layout, getSession, getCwd });
-  slots.inject("details", () =>
-    slots.register({ name: "details", priority: -1, locale: NS }, DockEntry)
+  slots.inject("shell.overlay", () =>
+    slots.register({ name: "shell.overlay", id: "dsh-file-pane", priority: -1, locale: NS }, DockEntry)
   );
   // Footer toggle restores the dock from the left sidebar when collapsed
   // (declared by ui-sidebar; rides the declaration lifetime like the dock).
