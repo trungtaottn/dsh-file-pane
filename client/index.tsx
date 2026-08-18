@@ -317,6 +317,17 @@ async function fetchListing(path) {
   } catch { return null; }
 }
 
+/** Fetch the list of files changed in a session (host spill lens). */
+async function fetchChanged(session) {
+  if (!session) return null;
+  try {
+    const res = await fetch("/browser/api/changed?session=" + encodeURIComponent(session));
+    if (!res.ok) return null;
+    const data = await res.json();
+    return Array.isArray(data?.entries) ? data.entries : null;
+  } catch { return null; }
+}
+
 /**
  * FileTree: a compact workspace file browser for the dock. Two-level lazy:
  * clicking a directory fetch+expands its children; clicking a file loads it
@@ -413,6 +424,8 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const [showTree, setShowTree] = useState(true);
   const [width, setWidth] = useState(readDockWidth);
   const [stamp, setStamp] = useState(0);
+  const [changedOpen, setChangedOpen] = useState(false);
+  const [changed, setChanged] = useState([]);
 
   // Restore the last docked path/session once (before any user open).
   const seeded = useRef(false);
@@ -484,6 +497,26 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Session "changed files": while the list is open, poll the host spill lens
+  // so newly edited files appear without user action (we control the host write
+  // path; a short refresh interval substitutes for a push channel we don't have).
+  useEffect(() => {
+    const sid = session ?? (typeof getSession === "function" ? getSession() : undefined);
+    if (!changedOpen || !sid) { if (!changedOpen) setChanged([]); return; }
+    let cancelled = false;
+    const load = async () => {
+      const c = await fetchChanged(sid);
+      if (!cancelled && c) setChanged((prev) => {
+        // coalesce: drop entries that vanished between polls
+        const has = new Set(c.map((e) => e.path));
+        return c.concat(prev.filter((p) => !has.has(p.path)));
+      });
+    };
+    load();
+    const t = setInterval(load, 4000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [changedOpen, session, getSession]);
+
   if (!open) return null;
 
   const effSession = session ?? (typeof getSession === "function" ? getSession() : undefined);
@@ -536,6 +569,13 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-crumb-link{background:none;border:0;color:var(--dsw-alias-label-secondary,#c7ccd9);cursor:pointer;font:inherit;line-height:1.3;padding:1px 3px;border-radius:4px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         .dshfp-crumb-link:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
         .dshfp-crumb-cur{color:var(--dsw-alias-label-primary,#eef1f8);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .dshfp-changed{flex:none;max-height:40%;overflow:auto;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));padding:4px 6px}
+        .dshfp-changed-item{display:flex;align-items:center;gap:6px;width:100%;text-align:left;background:none;border:0;cursor:pointer;padding:2px 6px;border-radius:4px;color:var(--dsw-alias-label-secondary,#c7ccd9);font:inherit;font-size:12px;white-space:nowrap;overflow:hidden}
+        .dshfp-changed-item:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-changed-item .nm{overflow:hidden;text-overflow:ellipsis}
+        .dshfp-changed-dot{flex:none;width:16px;text-align:center;font-size:10px;font-weight:700;border-radius:3px;padding:0 2px;color:var(--dsw-alias-bg-base,#0f1117)}
+        .dshfp-changed-dot[data-status="added"]{background:#2fbf71}
+        .dshfp-changed-dot[data-status="modified"]{background:#e8b341}
       `}</style>
       <div className="dshfp-dock-resize" title="Drag to resize" onMouseDown={onResizeStart} />
       <div className="dshfp-dock-head">
@@ -552,6 +592,9 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         <button type="button" title={t?.("dock.tree") ?? "Toggle file tree"} data-on={showTree || undefined} onClick={() => setShowTree((v) => !v)}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 3.5h4v3H3z"/><path d="M9 9.5h4v3H9z"/><path d="M5 6.5v3M11 6.5v3M5 6.5h6"/></svg>
         </button>
+        <button type="button" title={t?.("dock.changed") ?? "Files changed this session"} data-on={changedOpen || undefined} onClick={() => setChangedOpen((v) => !v)}>
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 4h6m2 0h3M2.5 8h3m2 0h6M2.5 12h6m2 0h3"/><path d="M10.5 6.5 12 8l2-2.5"/></svg>
+        </button>
         <button type="button" title={t?.("dock.diff") ?? "Version diff"} data-on={diff && isTextPath(path) || undefined} disabled={!isTextPath(path) || path === undefined} onClick={() => setDiff((v) => !v)}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h4M4 8h4M4 12h4"/><path d="M12 3.5v9"/><path d="M10.5 5.5 12 4l1.5 1.5M10.5 10.5 12 12l1.5-1.5"/></svg>
         </button>
@@ -561,6 +604,27 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         <button type="button" title={t?.("dock.close") ?? "Close pane"} onClick={() => toggle(false)}>✕</button>
       </div>
       {needSessionNote ? <div className="dshfp-dock-note">{t?.("dock.noSession") ?? "No session available for diff — open the file from a produced-file chip in chat first."}</div> : null}
+      {changedOpen ? (
+        <div className="dshfp-changed" aria-label={t?.("dock.changed") ?? "Files changed this session"}>
+          {changed.length === 0
+            ? <div className="dshfp-tree-empty">( none changed yet )</div>
+            : changed.map((c) => (
+              <button
+                type="button"
+                key={c.path}
+                className="dshfp-changed-item"
+                onClick={() => {
+                  setPath(c.path); setDiff(true); setChangedOpen(false);
+                  const sid = effSession;
+                  if (sid) { setSession(sid); persistDockState({ path: c.path, session: sid }); }
+                }}
+              >
+                <span className="dshfp-changed-dot" data-status={c.status}>{c.status === "added" ? "A" : "M"}</span>
+                <span className="nm">{c.path}</span>
+              </button>
+            ))}
+        </div>
+      ) : null}
       <div className="dshfp-dock-body">
         {showTree ? (
           <nav className="dshfp-dock-tree" aria-label={t?.("dock.tree") ?? "File tree"}>
@@ -671,8 +735,8 @@ function apply(ctx) {
   };
   const resolvePath = (rel) => resolvePanePath(getCwd(), rel);
   ctx.effect(() => ctx.locale.register(NS, {
-    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.tree": "Toggle file tree", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first." },
-    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.tree": "切换文件树", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件" }
+    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.tree": "Toggle file tree", "dock.changed": "Files changed this session", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first." },
+    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.tree": "切换文件树", "dock.changed": "本会话修改的文件", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件" }
   }), "dsh-file-pane: dictionaries");
   // Passive diff spill: agent edit before/after -> host RAM (per open session).
   ctx.conversationEvents.register(makeDiffSpillDefinition(getSession));

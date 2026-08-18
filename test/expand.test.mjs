@@ -253,6 +253,39 @@ test("GET diff with embed=1 omits bar and statusbar", async () => {
 
 /* ── client bundle: dock mount flag + layout service ────────────── */
 
+test("GET /browser/api/changed lists files edited this session with status", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-changed-"));
+	const f = path.join(dir, "a.md");
+	await fs.writeFile(f, "before\n");
+	const nb = path.join(dir, "b.md");
+	await fs.writeFile(nb, "hello\n"); // spill validates the file exists on disk
+	const h = makeHandler(dir);
+	// modified file
+	await request(h, "/browser/api/spill", "POST", { session: "S1", path: "a.md", old: "before\n", new: "after\n", ts: 2 });
+	// new file (no prior version)
+	await request(h, "/browser/api/spill", "POST", { session: "S1", path: "b.md", old: null, new: "hello\n", ts: 1 });
+	// another session stays separate
+	await fs.writeFile(path.join(dir, "z.md"), "x\n");
+	await request(h, "/browser/api/spill", "POST", { session: "S2", path: "z.md", old: null, new: "x", ts: 9 });
+
+	const c = await request(h, "/browser/api/changed?session=S1", "GET");
+	const body = JSON.parse(c.body);
+	assert.equal(c.code, 200);
+	assert.equal(body.session, "S1");
+	const byPath = Object.fromEntries(body.entries.map((e) => [e.path, e.status]));
+	assert.deepEqual(byPath, { "a.md": "modified", "b.md": "added" });
+	// newer-first ordering
+	assert.equal(body.entries[0].path, "a.md");
+	// missing session → 400
+	const noSess = await request(h, "/browser/api/changed", "GET");
+	assert.equal(noSess.code, 400);
+	// other session has its own entry only
+	const z = JSON.parse((await request(h, "/browser/api/changed?session=S2", "GET")).body);
+	assert.deepEqual(z.entries.map((e) => e.path), ["z.md"]);
+});
+
+/* ── client bundle: dock mount flag + layout service ────────────── */
+
 test("client bundle exports isDockMounted and declares layout", () => {
 	const { isDockMounted, inject } = loadClientBundle();
 	assert.equal(typeof isDockMounted, "function");
