@@ -252,6 +252,72 @@ function persistDockState(state) {
   try { localStorage.setItem(DOCK_STATE_KEY, JSON.stringify({ path: state.path ?? "", session: state.session ?? "" })); } catch { /* quota */ }
 }
 
+/** Fetch a directory listing as JSON (same origin). Returns entries or null. */
+async function fetchListing(path) {
+  try {
+    const res = await fetch("/browser/?path=" + encodeURIComponent(path ?? "") + "&json=1");
+    if (!res.ok) return null;
+    const data = await res.json();
+    return Array.isArray(data?.entries) ? data.entries : null;
+  } catch { return null; }
+}
+
+/**
+ * FileTree: a compact workspace file browser for the dock. Two-level lazy:
+ * clicking a directory fetch+expands its children; clicking a file loads it
+ * in the iframe. Sorted dirs-first, matching the pane listing.
+ */
+function FileTree({ path, onOpen, depth = 0 }) {
+  const [rows, setRows] = useState(null); // null = loading, [] = loaded
+  const [open, setOpen] = useState(depth === 0); // root auto-expanded
+  const [err, setErr] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setErr(false); setRows(null);
+    fetchListing(path).then((entries) => {
+      if (cancelled) return;
+      if (entries === null) { setErr(true); setRows([]); return; }
+      const sorted = [...entries].sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name));
+      setRows(sorted);
+    }).catch(() => { if (!cancelled) { setErr(true); setRows([]); } });
+    return () => { cancelled = true; };
+  }, [open, path]);
+
+  const toggle = (e) => { e.stopPropagation(); setOpen((o) => !o); };
+
+  return (
+    <ul className="dshfp-tree-l" style={{ paddingLeft: depth * 12 }}>
+      <li className="dshfp-tree-row">
+        <button className="dshfp-tree-node" type="button" onClick={toggle} data-dir="1">
+          <span className="chev">{open ? "⌄" : "›"}</span>
+          <span className="nm">{depth === 0 ? "workspace" : basename(path)}</span>
+        </button>
+        {open ? (
+          <ul className="dshfp-tree-c">
+            {err ? <li className="dshfp-tree-empty">( failed to load )</li> : null}
+            {rows === null && !err ? <li className="dshfp-tree-empty">( loading… )</li> : null}
+            {(rows ?? []).map((e) => {
+              const childPath = path ? path + "/" + e.name : e.name;
+              if (e.dir) return <FileTree key={childPath} path={childPath} onOpen={onOpen} depth={depth + 1} />;
+              return (
+                <li key={childPath} className="dshfp-tree-row">
+                  <button className="dshfp-tree-node" type="button" data-file="1" onClick={() => onOpen(childPath)}>
+                    <span className="chev">·</span>
+                    <span className="nm">{e.name}</span>
+                  </button>
+                </li>
+              );
+            })}
+            {(rows ?? []).length === 0 && !err && rows !== null ? <li className="dshfp-tree-empty">( empty )</li> : null}
+          </ul>
+        ) : null}
+      </li>
+    </ul>
+  );
+}
+
 /**
  * DockRoot: the frame's right `details` column occupant. The grid reserves
  * space beside the conversation (no overlay while in-flow); when the column is
@@ -265,6 +331,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const [session, setSession] = useState(undefined);
   const [diff, setDiff] = useState(false); // false = view, true = version diff
   const [open, setOpen] = useState(readDockOpen);
+  const [showTree, setShowTree] = useState(true);
   const [floating, setFloating] = useState(false);
   const [stamp, setStamp] = useState(0);
 
@@ -350,7 +417,17 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-dock-head button:disabled{opacity:.35;cursor:default;background:none}
         .dshfp-dock-head button[data-on]{color:var(--dsw-alias-state-business-primary,#5b96ff);outline:1px solid currentColor;outline-offset:-1px}
         .dshfp-dock-note{background:rgba(255,191,0,.08);color:var(--dsw-alias-state-warn-primary,#f0b386);padding:4px 8px;font-size:11px;line-height:1.4;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));flex:none}
+        .dshfp-dock-body{display:flex;flex:1;min-height:0}
+        .dshfp-dock-tree{width:180px;min-width:180px;border-right:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));overflow:auto;padding:4px 0;flex:none}
         .dshfp-dock iframe{flex:1;width:100%;border:0;min-height:0;background:#0f1117}
+        .dshfp-tree-l{list-style:none;margin:0;padding:0}
+        .dshfp-tree-c{list-style:none;margin:0;padding:0}
+        .dshfp-tree-row .dshfp-tree-row{padding-left:2px}
+        .dshfp-tree-node{display:flex;align-items:center;gap:4px;width:100%;background:none;border:0;color:var(--dsw-alias-label-secondary,#c7ccd9);cursor:pointer;padding:2px 6px;border-radius:4px;text-align:left;font:inherit;font-size:12px;line-height:1.5;overflow:hidden;white-space:nowrap}
+        .dshfp-tree-node:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-tree-node .chev{flex:none;width:10px;color:var(--dsw-alias-label-tertiary,#9aa3b5)}
+        .dshfp-tree-node .nm{overflow:hidden;text-overflow:ellipsis}
+        .dshfp-tree-empty{color:var(--dsw-alias-label-tertiary,#9aa3b5);font-size:11px;padding:1px 8px}
       `}</style>
       <div className="dshfp-dock-head">
         <button type="button" title={t?.("dock.home") ?? "Files root"} onClick={() => { nav(undefined); setDiff(false); }}>
@@ -363,6 +440,9 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 3.5V7h-3.5"/><path d="M3 12.5V9h3.5"/><path d="M13 7a5 5 0 0 0-8.5-3.5L3 5M13 9l-1.5 1.5A5 5 0 0 1 3 7"/></svg>
         </button>
         <span className="t">{t?.("dock.title") ?? "Files"}{path !== undefined ? ` · ${name}` : ""}</span>
+        <button type="button" title={t?.("dock.tree") ?? "Toggle file tree"} data-on={showTree || undefined} onClick={() => setShowTree((v) => !v)}>
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 3.5h4v3H3z"/><path d="M9 9.5h4v3H9z"/><path d="M5 6.5v3M11 6.5v3M5 6.5h6"/></svg>
+        </button>
         <button type="button" title={t?.("dock.diff") ?? "Version diff"} data-on={diff && isTextPath(path) || undefined} disabled={!isTextPath(path) || path === undefined} onClick={() => setDiff((v) => !v)}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h4M4 8h4M4 12h4"/><path d="M12 3.5v9"/><path d="M10.5 5.5 12 4l1.5 1.5M10.5 10.5 12 12l1.5-1.5"/></svg>
         </button>
@@ -372,7 +452,14 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         <button type="button" title={t?.("dock.close") ?? "Close pane"} onClick={() => toggle(false)}>✕</button>
       </div>
       {needSessionNote ? <div className="dshfp-dock-note">{t?.("dock.noSession") ?? "No session available for diff — open the file from a produced-file chip in chat first."}</div> : null}
-      <iframe key={path + ":" + diff + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
+      <div className="dshfp-dock-body">
+        {showTree ? (
+          <nav className="dshfp-dock-tree" aria-label={t?.("dock.tree") ?? "File tree"}>
+            <FileTree path={undefined} onOpen={(p) => { setPath(p); setDiff(false); }} />
+          </nav>
+        ) : null}
+        <iframe key={path + ":" + diff + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
+      </div>
     </div>
   );
 }
@@ -472,8 +559,8 @@ function apply(ctx) {
     return resolvePanePath(cwd, rel);
   };
   ctx.effect(() => ctx.locale.register(NS, {
-    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first." },
-    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件" }
+    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.tree": "Toggle file tree", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first." },
+    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.tree": "切换文件树", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件" }
   }), "dsh-file-pane: dictionaries");
   // Passive diff spill: agent edit before/after -> host RAM (per open session).
   ctx.conversationEvents.register(makeDiffSpillDefinition(getSession));

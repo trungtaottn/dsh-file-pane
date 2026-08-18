@@ -299,3 +299,36 @@ test("client bundle upPath computes parent directories", () => {
 	assert.equal(upPath(undefined), undefined);
 	assert.equal(upPath(""), undefined);
 });
+
+test("GET ?path=...&json=1 returns directory listing as JSON", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-json-"));
+	await fs.mkdir(path.join(dir, "sub"));
+	await fs.writeFile(path.join(dir, "a.md"), "x");
+	await fs.writeFile(path.join(dir, "b.ts"), "y");
+	const h = makeHandler(dir);
+	const r = await request(h, "/browser/?path=&json=1");
+	assert.equal(r.code, 200);
+	assert.match(r.type, /json/);
+	const data = JSON.parse(r.body);
+	assert.ok(Array.isArray(data.entries));
+	const names = data.entries.map((e) => e.name);
+	assert.ok(names.includes("a.md"));
+	assert.ok(names.includes("b.ts"));
+	const sub = data.entries.find((e) => e.name === "sub");
+	assert.equal(sub.dir, true);
+});
+
+test("json listing guards root escape (403)", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-json-"));
+	const h = makeHandler(dir);
+	const r = await request(h, "/browser/?path=" + encodeURIComponent("../../etc") + "&json=1");
+	assert.equal(r.code, 403);
+});
+
+test("json listing for a file returns 400 (not a directory)", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-json-"));
+	await fs.writeFile(path.join(dir, "a.md"), "x");
+	const h = makeHandler(dir);
+	const r = await request(h, "/browser/?path=a.md&json=1");
+	assert.equal(r.code, 400);
+});
