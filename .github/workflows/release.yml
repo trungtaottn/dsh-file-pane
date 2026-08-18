@@ -1,18 +1,17 @@
-# dsh-file-pane — semantic-release pipeline.
+# dsh-file-pane — semantic-release pipeline (GitHub-only, NO npm publish).
 #
 # Release model (see release.config.mjs):
-#   - push to main → stable channel (latest): 0.x.y
-#   - push to dev   → pre-release channel (beta): 0.x.y-beta.N
+#   - push to main → stable channel (latest): tag v0.x.y + GitHub Release
+#   - push to dev   → pre-release channel (beta): tag v0.x.y-beta.N
 #
-# npm publish auth — TWO supported paths (either one is enough):
-#   1. Trusted Publishing via OIDC (no token needed, RECOMMENDED):
-#      - Configure once on npmjs.com: account → "Access Tokens" → "Integrations"
-#        (or "Trusted Publishers") → add GitHub Actions for this repo.
-#      - The job below carries `id-token: write`, which semantic-release detects
-#        (oidcContextEstablished) and publishes with provenance automatically.
-#   2. NPM_TOKEN repo secret (Settings → Secrets and variables → Actions):
-#      - classic fallback; used when OIDC is not configured.
-# GITHUB_TOKEN is provided automatically by Actions.
+# npm publishing is disabled (npmPublish: false in release.config.mjs), so no
+# NPM_TOKEN / OIDC is needed: @semantic-release/npm only bumps package.json and
+# creates the git tag, and @semantic-release/github publishes the GitHub
+# Release. The packed tarball is attached so the plugin can be installed
+# straight from the release:
+#
+#   dsh plugin --profile web add <release tarball URL>
+#   sudo systemctl restart deepseek-harness-web
 
 name: Release
 
@@ -23,7 +22,6 @@ on:
 permissions:
   contents: write
   issues: write # semantic-release/github files issues when a release fails
-  id-token: write # OIDC trusted publishing + npm provenance
 
 jobs:
   test:
@@ -49,12 +47,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
       - run: npm ci
       - name: Build client bundle + PDF.js assets
         run: npm run build
-      - name: Semantic release (OIDC trusted publishing or NPM_TOKEN)
+      - name: Semantic release (GitHub only)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npx semantic-release
