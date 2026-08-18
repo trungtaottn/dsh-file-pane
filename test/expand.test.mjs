@@ -1,0 +1,206 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { promises as fs, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+import JSZip from "jszip";
+
+import { resolveWithin, readFileResult, mimeFor } from "../lib/view-core.mjs";
+import { docxPreview } from "../lib/docx.mjs";
+import { apply as applyHost } from "../lib/index.js";
+
+function makeHandler(root, config = {}) {
+	let reg;
+	const ctx = { webServer: { register: (x) => (reg = x) }, logger: { info() {} } };
+	applyHost(ctx, { workspaceRoot: root, ...config });
+	return reg.handler;
+}
+
+async function request(handler, url, method = "GET", body) {
+	const r = { code: null, type: null, body: "", buf: null };
+	const res = {
+		writeHead(c, h) { r.code = c; r.type = h?.["content-type"]; },
+		end(b) { if (Buffer.isBuffer(b)) { r.buf = b; r.body = b.toString("utf8"); } else { r.body = String(b); } }
+	};
+	const req = { url, method };
+	if (body !== undefined) req[Symbol.asyncIterator] = async function* () { yield Buffer.from(JSON.stringify(body)); };
+	await handler(req, res);
+	return r;
+}
+
+/** Build a minimal valid .docx (OOXML zip) with the given paragraphs. */
+async function makeDocx(paragraphs) {
+	const zip = new JSZip();
+	zip.file("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`);
+	zip.file("_rels/.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`);
+	zip.file("word/document.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>${paragraphs.map((p) => `<w:p><w:r><w:t>${p}</w:t></w:r></w:p>`).join("")}</w:body></w:document>`);
+	return zip.generateAsync({ type: "nodebuffer" });
+}
+
+/* ── resolveWithin: absolute-under-root paths ─────────────────────── */
+
+test("resolveWithin accepts an absolute path inside the root", async () => {
+	const root = await fs.mkdtemp(path.join(tmpdir(), "pane-abs-"));
+	await fs.writeFile(path.join(root, "a.md"), "x");
+	const abs = path.join(root, "a.md");
+	const { real } = await resolveWithin(root, abs);
+	assert.equal(real, abs);
+});
+
+test("resolveWithin rejects an absolute path outside the root (403)", async () => {
+	const root = await fs.mkdtemp(path.join(tmpdir(), "pane-abs-"));
+	const outside = await fs.mkdtemp(path.join(tmpdir(), "pane-out-"));
+	await fs.writeFile(path.join(outside, "s.txt"), "s");
+	await assert.rejects(resolveWithin(root, path.join(outside, "s.txt")), (e) => e.status === 403);
+});
+
+test("resolveWithin keeps rejecting relative traversal (regression)", async () => {
+	const root = await fs.mkdtemp(path.join(tmpdir(), "pane-abs-"));
+	await assert.rejects(resolveWithin(root, "../../etc/passwd"), (e) => e.status === 403);
+});
+
+test("mimeFor maps .docx to the office mime", () => {
+	assert.equal(mimeFor("report.docx"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+});
+
+/* ── docx preview (mammoth host-side) ─────────────────────────────── */
+
+test("docxPreview converts a real .docx to markdown + plain text", async () => {
+	const docx = await makeDocx(["Hello **docx** world", "Second line"]);
+	const conv = await docxPreview(docx);
+	assert.ok(conv, "expected conversion to succeed");
+	assert.match(conv.text, /Hello/);
+	assert.match(conv.text, /Second line/);
+	assert.ok(conv.md.includes("Hello"), "markdown should contain the text");
+});
+
+test("docxPreview returns null on garbage bytes (route falls back)", async () => {
+	assert.equal(await docxPreview(Buffer.from("not a docx at all")), null);
+});
+
+/* ── route: docx file view + vendor pdfjs assets ─────────────────── */
+
+test("GET ?path=<real>.docx renders docx preview HTML", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-docx-"));
+	const docx = await makeDocx(["Title", "Body text"]);
+	await fs.writeFile(path.join(dir, "report.docx"), docx);
+	const h = makeHandler(dir);
+	const r = await request(h, "/browser/?path=report.docx");
+	assert.equal(r.code, 200);
+	assert.match(r.type, /html/);
+	assert.ok(r.body.includes("docx preview"), "expected docx preview toolbar");
+	assert.ok(r.body.includes("Body text"), "expected extracted text rendered");
+});
+
+test("GET ?path=<broken>.docx falls back to 200 HTML (no crash)", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-docx-"));
+	await fs.writeFile(path.join(dir, "broken.docx"), "garbage");
+	const h = makeHandler(dir);
+	const r = await request(h, "/browser/?path=broken.docx");
+	assert.equal(r.code, 200);
+	assert.match(r.type, /html/);
+});
+
+test("GET /browser/vendor/pdfjs/pdfjs-viewer-element.js serves the asset", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-vendor-"));
+	const h = makeHandler(dir);
+	const r = await request(h, "/browser/vendor/pdfjs/pdfjs-viewer-element.js");
+	assert.equal(r.code, 200);
+	assert.match(r.type, /javascript/);
+	assert.ok(r.buf.length > 1000, "expected the web component source");
+});
+
+test("vendor pdfjs route blocks traversal (403/404, never outside assets)", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-vendor-"));
+	const h = makeHandler(dir);
+	const esc = await request(h, "/browser/vendor/pdfjs/..%2f..%2f..%2fetc%2fpasswd");
+	assert.ok([403, 404].includes(esc.code), `got ${esc.code}`);
+	const missing = await request(h, "/browser/vendor/pdfjs/nope.js");
+	assert.equal(missing.code, 404);
+});
+
+test("GET ?path=<absolute-inside-root> serves the file", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-abs-route-"));
+	await fs.writeFile(path.join(dir, "a.md"), "# abs");
+	const h = makeHandler(dir);
+	const abs = encodeURIComponent(path.join(dir, "a.md"));
+	const r = await request(h, `/browser/?path=${abs}`);
+	assert.equal(r.code, 200);
+	assert.match(r.type, /html/);
+	assert.ok(r.body.includes("abs"), "expected the file content rendered");
+});
+
+/* ── client-plugin: resolvePanePath (cwd → absolute under root) ──── */
+
+function loadClientBundle() {
+	let captured = null;
+	const prev = globalThis.window;
+	globalThis.window = { __ModuleLoader__: { load: (spec) => (captured = spec) } };
+	try {
+		new Function(readFileSync(new URL("../lib/client.js", import.meta.url), "utf8"))();
+	} finally {
+		if (prev === undefined) delete globalThis.window;
+		else globalThis.window = prev;
+	}
+	return captured.factory((id) => {
+		if (id === "react") return { createElement: () => null, Fragment: {} };
+		throw new Error("unexpected require: " + id);
+	});
+}
+
+test("resolvePanePath joins cwd + relative deliverable (built-in resolveWorkspacePath semantics)", () => {
+	const { resolvePanePath } = loadClientBundle();
+	assert.equal(resolvePanePath("/home/kaynt/Code/dsh-file-pane", "src/app.ts"), "/home/kaynt/Code/dsh-file-pane/src/app.ts");
+	assert.equal(resolvePanePath("/home/kaynt", "a/b.md"), "/home/kaynt/a/b.md");
+	// absolute deliverable passes through untouched
+	assert.equal(resolvePanePath("/home/kaynt", "/tmp/x.txt"), "/tmp/x.txt");
+	// no cwd → raw relative path (legacy behavior)
+	assert.equal(resolvePanePath(undefined, "docs/README.md"), "docs/README.md");
+	// blank cwd → raw relative path
+	assert.equal(resolvePanePath("", "x.ts"), "x.ts");
+});
+
+test("readFileResult classifies .docx as kind docx", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-docx-"));
+	const docx = await makeDocx(["hi"]);
+	await fs.writeFile(path.join(dir, "a.docx"), docx);
+	const file = await readFileResult(dir, "a.docx");
+	assert.equal(file.kind, "docx");
+	assert.equal(file.mime, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+});
+
+/* ── apply: workspaceRoot config resolution (env/patch fallback chain) ── */
+
+test("apply falls back to process.env.HOME when no workspaceRoot config is given", async () => {
+	let captured;
+	const ctx = { webServer: { register: (x) => (captured = x) }, logger: { info() {} } };
+	applyHost(ctx, {});
+	assert.ok(captured, "route registered");
+	// The handler must resolve files under $HOME (the default root).
+	const probe = path.join(process.env.HOME, "..", "etc", "passwd");
+	// Not asserting a 200 here (root dir contents vary); just verify the route
+	// is wired and traversal still 403s against the HOME default.
+	const r = await request(captured.handler, "/browser/?path=" + encodeURIComponent("../../etc/passwd"));
+	assert.equal(r.code, 403);
+});
+
+test("apply uses config.workspaceRoot over process.env.HOME", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-cfg-"));
+	await fs.writeFile(path.join(dir, "x.md"), "cfg-root");
+	let captured;
+	const ctx = { webServer: { register: (x) => (captured = x) }, logger: { info() {} } };
+	applyHost(ctx, { workspaceRoot: dir });
+	const r = await request(captured.handler, "/browser/?path=x.md");
+	assert.equal(r.code, 200);
+	assert.ok(r.body.includes("cfg-root"));
+});

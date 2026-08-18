@@ -1,0 +1,6 @@
+node_modules/
+*.log
+.tmp/
+dist/
+# local session handoff — never commit (see HANDOFF-next-session.md)
+HANDOFF-next-session.md
