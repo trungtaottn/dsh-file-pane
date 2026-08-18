@@ -1,0 +1,11 @@
+import { chromium } from "playwright-core";
+const URL = process.argv[2];
+const OUT = process.argv[3] || "/tmp/dock-shot.png";
+const execPath = `${process.env.HOME}/.cache/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-linux64/chrome-headless-shell`;
+const browser = await chromium.launch({ executablePath: execPath });
+const page = await browser.newPage({ viewport: { width: 520, height: 640 } });
+await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 20000 }).catch(()=>{});
+await page.waitForTimeout(1200);
+await page.screenshot({ path: OUT });
+console.log("shot:", OUT);
+await browser.close();
