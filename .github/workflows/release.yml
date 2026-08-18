@@ -22,6 +22,7 @@ on:
 
 permissions:
   contents: write
+  issues: write # semantic-release/github files issues when a release fails
   id-token: write # OIDC trusted publishing + npm provenance
 
 jobs:
