@@ -283,23 +283,42 @@ function persistDockState(state) {
 }
 
 /** Fetch a directory listing as JSON (same origin). Returns entries or null. */
-async function fetchListing(path) {
+async function fetchListing(path, workspace) {
   try {
-    const res = await fetch("/browser/?path=" + encodeURIComponent(path ?? "") + "&json=1");
+    const res = await fetch("/browser/?path=" + encodeURIComponent(path ?? "") + "&json=1" + (workspace ? "&workspace=" + encodeURIComponent(workspace) : ""));
     if (!res.ok) return null;
     const data = await res.json();
     return Array.isArray(data?.entries) ? data.entries : null;
   } catch { return null; }
 }
 
-/** Fetch the list of files changed in a session (host spill lens). */
-async function fetchChanged(session) {
-  if (!session) return null;
+/** Fetch the current branch + local branch list for a workspace. Returns null on error. */
+async function fetchGitBranch(workspace) {
+  if (!workspace) return null;
   try {
-    const res = await fetch("/browser/api/changed?session=" + encodeURIComponent(session));
+    const res = await fetch("/browser/api/git/branch?workspace=" + encodeURIComponent(workspace));
     if (!res.ok) return null;
-    const data = await res.json();
-    return Array.isArray(data?.entries) ? data.entries : null;
+    return await res.json();
+  } catch { return null; }
+}
+
+/** Fetch the git dirty-file set for a workspace. Returns null on error. */
+async function fetchGitStatus(workspace) {
+  if (!workspace) return null;
+  try {
+    const res = await fetch("/browser/api/git/status?workspace=" + encodeURIComponent(workspace));
+    if (!res.ok) return null;
+    const d = await res.json();
+    return Array.isArray(d?.changes) ? d : null;
+  } catch { return null; }
+}
+
+/** Switch the workspace to a branch (POST). Returns { ok, error?, current } or null. */
+async function checkoutGitBranch(workspace, branch) {
+  if (!workspace || !branch) return null;
+  try {
+    const res = await fetch("/browser/api/git/checkout?workspace=" + encodeURIComponent(workspace) + "&branch=" + encodeURIComponent(branch), { method: "POST" });
+    return await res.json().catch(() => null);
   } catch { return null; }
 }
 
@@ -308,7 +327,7 @@ async function fetchChanged(session) {
  * clicking a directory fetch+expands its children; clicking a file loads it
  * in the iframe. Sorted dirs-first, matching the pane listing.
  */
-function FileTree({ path, onOpen, activePath, depth = 0 }) {
+function FileTree({ path, onOpen, activePath, depth = 0, workspace }) {
   const [rows, setRows] = useState(null); // null = loading, [] = loaded
   const [open, setOpen] = useState(depth === 0); // root auto-expanded
   const [err, setErr] = useState(false);
@@ -317,14 +336,14 @@ function FileTree({ path, onOpen, activePath, depth = 0 }) {
     if (!open) return;
     let cancelled = false;
     setErr(false); setRows(null);
-    fetchListing(path).then((entries) => {
+    fetchListing(path, workspace).then((entries) => {
       if (cancelled) return;
       if (entries === null) { setErr(true); setRows([]); return; }
       const sorted = [...entries].sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name));
       setRows(sorted);
     }).catch(() => { if (!cancelled) { setErr(true); setRows([]); } });
     return () => { cancelled = true; };
-  }, [open, path]);
+  }, [open, path, workspace]);
 
   const toggle = (e) => { e.stopPropagation(); setOpen((o) => !o); };
 
@@ -333,7 +352,7 @@ function FileTree({ path, onOpen, activePath, depth = 0 }) {
       <li className="dshfp-tree-row">
         <button className="dshfp-tree-node" type="button" onClick={toggle} data-dir="1">
           <span className="chev">{open ? "⌄" : "›"}</span>
-          <span className="nm">{depth === 0 ? "workspace" : basename(path)}</span>
+          <span className="nm">{path ? basename(path) : "workspace"}</span>
         </button>
         {open ? (
           <ul className="dshfp-tree-c">
@@ -341,7 +360,7 @@ function FileTree({ path, onOpen, activePath, depth = 0 }) {
             {rows === null && !err ? <li className="dshfp-tree-empty">( loading… )</li> : null}
             {(rows ?? []).map((e) => {
               const childPath = path ? path + "/" + e.name : e.name;
-              if (e.dir) return <FileTree key={childPath} path={childPath} onOpen={onOpen} activePath={activePath} depth={depth + 1} />;
+              if (e.dir) return <FileTree key={childPath} path={childPath} onOpen={onOpen} activePath={activePath} depth={depth + 1} workspace={workspace} />;
               return (
                 <li key={childPath} className="dshfp-tree-row">
                   <button className="dshfp-tree-node" type="button" data-file="1" data-active={childPath === activePath || undefined} onClick={() => onOpen(childPath)}>
@@ -402,6 +421,9 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const [stamp, setStamp] = useState(0);
   const [changeView, setChangeView] = useState(false); // sidebar shows Changes (VSCode Source-Control style) vs the file tree
   const [changed, setChanged] = useState([]);
+  const [git, setGit] = useState({ git: false, current: null, branches: [] }); // branch state for the status bar
+  const [branchOpen, setBranchOpen] = useState(false); // branch switcher dropdown
+  const [gitErr, setGitErr] = useState(null);
 
   // Restore the last docked path/session once (before any user open).
   const seeded = useRef(false);
@@ -453,23 +475,34 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
     return () => window.removeEventListener("keydown", onKey);
   }, [layout]);
 
-  // Session "changed files": while the Changes view is open, poll the host spill
-  // lens so newly edited files appear without user action.
+  // Git: current branch + branch list for the status bar (workspace = active cwd).
   useEffect(() => {
-    const sid = session ?? (typeof getSession === "function" ? getSession() : undefined);
-    if (!changeView || !sid) { if (!changeView) setChanged([]); return; }
+    const ws = typeof getCwd === "function" ? getCwd() : undefined;
+    if (!ws) { setGit((g) => ({ ...g, git: false, current: null, branches: [] })); return; }
+    let cancelled = false;
+    fetchGitBranch(ws).then((d) => {
+      if (cancelled || !d) return;
+      setGit({ git: !!d.git, current: d.current ?? null, branches: Array.isArray(d.branches) ? d.branches : [] });
+    });
+    return () => { cancelled = true; };
+  }, [getCwd, session, getSession]);
+
+  // Git changes (source-control style): while the Changes view is open, poll the
+  // workspace's dirty-file set so edits/new files appear without user action.
+  useEffect(() => {
+    if (!changeView) { setChanged([]); return; }
+    const ws = typeof getCwd === "function" ? getCwd() : undefined;
+    if (!ws) return;
     let cancelled = false;
     const load = async () => {
-      const c = await fetchChanged(sid);
-      if (!cancelled && c) setChanged((prev) => {
-        const has = new Set(c.map((e) => e.path));
-        return c.concat(prev.filter((p) => !has.has(p.path)));
-      });
+      const c = await fetchGitStatus(ws);
+      if (cancelled || !c) return;
+      setChanged(Array.isArray(c.changes) ? c.changes.map((e) => ({ path: e.path, status: e.status, staged: !!e.staged })) : []);
     };
     load();
     const t = setInterval(load, 4000);
     return () => { cancelled = true; clearInterval(t); };
-  }, [changeView, session, getSession]);
+  }, [changeView, getCwd, session, git.current]);
 
   if (!open) return null;
 
@@ -479,7 +512,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   // shows only the active workspace, not the whole hosting machine.
   const base = typeof getCwd === "function" ? getCwd() : undefined;
   const viewPath = path ?? base; // undefined path → the workspace root listing
-  const src = dockSrc(viewPath, { diff, session: effSession });
+  const src = dockSrc(viewPath, { diff, session: effSession, workspace: base });
   const needSessionNote = diff && isTextPath(viewPath) && effSession === undefined;
   const nav = (next) => { setPath(next); }; // navigating resets diff
   // Opening a file focuses the content and hides the tree (tab-like); the tree
@@ -491,6 +524,17 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const onAct = (v) => {
     if (showTree && changeView === v) setShowTree(false);
     else { setChangeView(v); setShowTree(true); }
+  };
+  // Switch branch via the server, then refresh branch + dirty set + the iframe.
+  const doCheckout = async (b) => {
+    setBranchOpen(false); setGitErr(null);
+    const ws = typeof getCwd === "function" ? getCwd() : undefined;
+    if (!ws || b === git.current) return;
+    const r = await checkoutGitBranch(ws, b);
+    const d = await fetchGitBranch(ws);
+    if (d) setGit({ git: !!d.git, current: d.current ?? null, branches: Array.isArray(d.branches) ? d.branches : [] });
+    if (r && !r.ok) setGitErr(r.error || "checkout failed");
+    setStamp((s) => s + 1); // reload the iframe (path may have moved / tree refresh)
   };
   const relC = stripBase(viewPath, base);    // path relative to the workspace (for breadcrumb/Up)
   const upRel = upPath(relC);                // parent relative to the workspace (undefined = at base)
@@ -552,9 +596,27 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-changed-item{display:flex;align-items:center;gap:6px;width:100%;text-align:left;background:none;border:0;cursor:pointer;padding:2px 6px;border-radius:4px;color:var(--dsw-alias-label-secondary,#c7ccd9);font:inherit;font-size:12px;white-space:nowrap;overflow:hidden}
         .dshfp-changed-item:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
         .dshfp-changed-item .nm{overflow:hidden;text-overflow:ellipsis}
-        .dshfp-changed-dot{flex:none;width:16px;text-align:center;font-size:10px;font-weight:700;border-radius:3px;padding:0 2px;color:var(--dsw-alias-bg-base,#0f1117)}
-        .dshfp-changed-dot[data-status="added"]{background:#2fbf71}
-        .dshfp-changed-dot[data-status="modified"]{background:#e8b341}
+        .dshfp-changed-dot{flex:none;width:18px;text-align:center;font-size:10px;font-weight:700;border-radius:3px;padding:0 2px;color:var(--dsw-alias-bg-base,#0f1117)}
+        .dshfp-changed-dot[data-status="A"]{background:#2fbf71}
+        .dshfp-changed-dot[data-status="M"]{background:#e8b341}
+        .dshfp-changed-dot[data-status="D"]{background:#e5636a}
+        .dshfp-changed-dot[data-status="R"],[data-status="C"]{background:#5b96ff}
+        .dshfp-changed-dot[data-status="?"]{background:#9aa3b5}
+        .dshfp-git{display:flex;flex-direction:column;gap:0}
+        .dshfp-status{display:flex;align-items:center;gap:6px;padding:3px 8px;border-top:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));font-size:12px;color:var(--dsw-alias-label-tertiary,#9aa3b5);flex:none;position:relative;font-family:var(--dsw-alias-font-sans,ui-monospace,Menlo,Consolas,monospace)}
+        .dshfp-status .dshfp-branch{display:inline-flex;align-items:center;gap:5px;background:none;border:0;color:var(--dsw-alias-label-secondary,#c7ccd9);cursor:pointer;font:inherit;font-size:12px;padding:1px 6px;border-radius:4px;max-width:170px}
+        .dshfp-status .dshfp-branch:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-status .dshfp-branch-ic{color:var(--dsw-alias-state-business-primary,#5b96ff);flex:none}
+        .dshfp-status .dshfp-branch-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+        .dshfp-status .dshfp-branch-meta{flex:none;opacity:.7}
+        .dshfp-status .dshfp-branch-menu{position:absolute;bottom:calc(100% + 4px);left:4px;min-width:180px;max-width:240px;max-height:300px;overflow:auto;background:var(--dsw-alias-bg-base,#0f1117);border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.18));border-radius:8px;box-shadow:0 -6px 24px rgba(0,0,0,.4);z-index:31;padding:4px}
+        .dshfp-status .dshfp-branch-item{display:block;width:100%;text-align:left;background:none;border:0;color:var(--dsw-alias-label-secondary,#c7ccd9);cursor:pointer;font:inherit;font-size:12px;padding:4px 8px;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .dshfp-status .dshfp-branch-item:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-status .dshfp-branch-item.on{color:var(--dsw-alias-state-business-primary,#5b96ff);font-weight:600}
+        .dshfp-status .dshfp-branch-item.check{color:var(--dsw-alias-label-tertiary,#9aa3b5);border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
+        .dshfp-status-sp{flex:1}
+        .dshfp-status-changes{max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-state-warn-primary,#f0b386)}
+        .dshfp-git-err{flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-state-danger-primary,#ff6b6b)}
       `}</style>
       <div className="dshfp-dock-head">
         <button type="button" title={t?.("dock.home") ?? "Files root"} onClick={() => { navDir(base); }}>
@@ -599,19 +661,19 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
             <div className="dshfp-panel">
               {changeView ? (
                 <div className="dshfp-dock-tree dshfp-changes" aria-label={t?.("dock.changes") ?? "Changes"}>
-                  <div className="dshfp-changes-head">{t?.("dock.changesHead") ?? "Changes in this session"}</div>
+                  <div className="dshfp-changes-head">{t?.("dock.changesHead") ?? "Changes"}</div>
                   {changed.length === 0
-                    ? <div className="dshfp-tree-empty">( none changed yet )</div>
+                    ? <div className="dshfp-tree-empty">( working tree clean )</div>
                     : changed.map((c) => (
                       <button type="button" key={c.path} className="dshfp-changed-item" onClick={() => { setPath(c.path); setDiff(true); setShowTree(false); const sid = effSession; if (sid) { setSession(sid); persistDockState({ path: c.path, session: sid }); } }}>
-                        <span className="dshfp-changed-dot" data-status={c.status}>{c.status === "added" ? "A" : "M"}</span>
+                        <span className="dshfp-changed-dot" data-status={c.status}>{c.status === "?" ? "?" : (c.status || "M")[0]}</span>
                         <span className="nm">{c.path}</span>
                       </button>
                     ))}
                 </div>
               ) : (
                 <nav className="dshfp-dock-tree" aria-label={t?.("dock.tree") ?? "File tree"}>
-                  <FileTree path={base} onOpen={openFile} activePath={viewPath} />
+                  <FileTree path={base} workspace={base} onOpen={openFile} activePath={viewPath} />
                 </nav>
               )}
             </div>
@@ -620,19 +682,39 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
               <nav className="dshfp-dock-tree dshfp-tree-pop" aria-label={t?.("dock.tree") ?? "File tree"} onMouseEnter={() => setTreeHover(true)} onMouseLeave={() => setTreeHover(false)}>
                 {(hoverAct ?? changeView)
                   ? changed.length === 0
-                    ? <div className="dshfp-tree-empty">( none changed yet )</div>
+                    ? <div className="dshfp-tree-empty">( working tree clean )</div>
                     : changed.map((c) => (
                       <button type="button" key={c.path} className="dshfp-changed-item" onClick={() => { setPath(c.path); setDiff(true); setShowTree(false); const sid = effSession; if (sid) { setSession(sid); persistDockState({ path: c.path, session: sid }); } }}>
-                        <span className="dshfp-changed-dot" data-status={c.status}>{c.status === "added" ? "A" : "M"}</span>
+                        <span className="dshfp-changed-dot" data-status={c.status}>{c.status === "?" ? "?" : (c.status || "M")[0]}</span>
                         <span className="nm">{c.path}</span>
                       </button>
                     ))
-                  : <FileTree path={base} onOpen={openFile} activePath={viewPath} />}
+                  : <FileTree path={base} workspace={base} onOpen={openFile} activePath={viewPath} />}
               </nav>
             ) : null
           )}
         </div>
         <iframe key={path + ":" + diff + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
+      </div>
+      {gitErr ? <div className="dshfp-git-err">{gitErr}</div> : null}
+      <div className="dshfp-status">
+        <button type="button" className="dshfp-branch" onClick={() => setBranchOpen((o) => !o)} title={t?.("dock.branch") ?? "Git branch"}>
+          <span className="dshfp-branch-ic">⑂</span>
+          <span className="dshfp-branch-name">{git.current ?? (git.git ? "(detached)" : "no git")}</span>
+          {git.git ? <span className="dshfp-branch-meta">⌄</span> : null}
+        </button>
+        {branchOpen ? (
+          <div className="dshfp-branch-menu">
+            {git.branches.length === 0
+              ? <div className="dshfp-branch-item">( no branches )</div>
+              : git.branches.map((b) => (
+                  <button key={b} type="button" className={"dshfp-branch-item" + (b === git.current ? " on" : "")} onClick={() => doCheckout(b)}>{b}</button>
+                ))}
+            <button type="button" className="dshfp-branch-item check" onClick={() => setBranchOpen(false)}>close</button>
+          </div>
+        ) : null}
+        <span className="dshfp-status-sp" />
+        <span className="dshfp-status-changes">{git.git && changed.length > 0 ? changed.length + " changed" : ""}</span>
       </div>
     </div>
   );
@@ -658,10 +740,11 @@ function isTextPath(p) {
 }
 
 /** Build the dock iframe src from the current location (pure, testable). */
-function dockSrc(path, { diff = false, session } = {}) {
-  let q = "/browser/?path=" + encodeURIComponent(path ?? "") + "&embed=1";
+function dockSrc(path, { diff = false, session, workspace } = {}) {
+  const ws = workspace ? "&workspace=" + encodeURIComponent(workspace) : "";
+  let q = "/browser/?path=" + encodeURIComponent(path ?? "") + ws + "&embed=1";
   if (diff && isTextPath(path)) {
-    q = "/browser/?path=" + encodeURIComponent(path) + "&diff=1" + (session ? "&session=" + encodeURIComponent(session) : "") + "&embed=1";
+    q = "/browser/?path=" + encodeURIComponent(path) + "&diff=1" + (session ? "&session=" + encodeURIComponent(session) : "") + ws + "&embed=1";
   }
   return q;
 }
@@ -741,8 +824,8 @@ function apply(ctx) {
   };
   const resolvePath = (rel) => resolvePanePath(getCwd(), rel);
   ctx.effect(() => ctx.locale.register(NS, {
-    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.tree": "File tree", "dock.files": "Files", "dock.git": "Git / Changes", "dock.changes": "Changes", "dock.changesHead": "Changes in this session", "dock.revealTree": "Show file tree", "dock.collapseTree": "Collapse file tree", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first." },
-    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.tree": "文件树", "dock.files": "文件", "dock.git": "Git / 更改", "dock.changes": "更改", "dock.changesHead": "本会话的更改", "dock.revealTree": "显示文件树", "dock.collapseTree": "折叠文件树", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件" }
+    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.tree": "File tree", "dock.files": "Files", "dock.git": "Git / Changes", "dock.changes": "Changes", "dock.changesHead": "Changes", "dock.branch": "Git branch", "dock.revealTree": "Show file tree", "dock.collapseTree": "Collapse file tree", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first." },
+    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.tree": "文件树", "dock.files": "文件", "dock.git": "Git / 更改", "dock.changes": "更改", "dock.changesHead": "更改", "dock.branch": "Git 分支", "dock.revealTree": "显示文件树", "dock.collapseTree": "折叠文件树", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件" }
   }), "dsh-file-pane: dictionaries");
   // Passive diff spill: agent edit before/after -> host RAM (per open session).
   ctx.conversationEvents.register(makeDiffSpillDefinition(getSession));
