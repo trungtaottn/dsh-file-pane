@@ -573,14 +573,13 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
       <div className="dshfp-dock-body">
         <div
           className={"dshfp-side" + (showTree ? "" : " closed")}
-          onMouseEnter={() => { if (!showTree) setTreeHover(true); }}
           onMouseLeave={() => { setTreeHover(false); setHoverAct(null); }}
         >
           <div className="dshfp-rail">
-            <button type="button" className="dshfp-act" onMouseEnter={() => setHoverAct(false)} data-on={!changeView || undefined} title={t?.("dock.files") ?? "Files"} onClick={() => onAct(false)}>
+            <button type="button" className="dshfp-act" onMouseEnter={() => { setHoverAct(false); if (!showTree) setTreeHover(true); }} data-on={!changeView || undefined} title={t?.("dock.files") ?? "Files"} onClick={() => onAct(false)}>
               <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 2H13a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/></svg>
             </button>
-            <button type="button" className="dshfp-act" onMouseEnter={() => setHoverAct(true)} data-on={changeView || undefined} title={t?.("dock.git") ?? "Git / Changes"} onClick={() => onAct(true)}>
+            <button type="button" className="dshfp-act" onMouseEnter={() => { setHoverAct(true); if (!showTree) setTreeHover(true); }} data-on={changeView || undefined} title={t?.("dock.git") ?? "Git / Changes"} onClick={() => onAct(true)}>
               <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h4M4 8h4M4 12h4"/><path d="M12 3.5v9"/><path d="M10.5 5.5 12 4l1.5 1.5M10.5 10.5 12 12l1.5-1.5"/></svg>
             </button>
             <span className="dshfp-sp" />
@@ -612,7 +611,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
             </div>
           ) : (
             treeHover ? (
-              <nav className="dshfp-dock-tree dshfp-tree-pop" aria-label={t?.("dock.tree") ?? "File tree"}>
+              <nav className="dshfp-dock-tree dshfp-tree-pop" aria-label={t?.("dock.tree") ?? "File tree"} onMouseEnter={() => setTreeHover(true)} onMouseLeave={() => setTreeHover(false)}>
                 {(hoverAct ?? changeView)
                   ? changed.length === 0
                     ? <div className="dshfp-tree-empty">( none changed yet )</div>
