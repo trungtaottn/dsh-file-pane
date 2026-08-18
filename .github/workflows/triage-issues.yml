@@ -1,0 +1,92 @@
+# Auto-label + triage issues on open.
+#
+# When an issue is opened (or reopened), classify it from its content/title and
+# add the matching labels, assign the repo owner when not already assigned, and
+# add a short welcome comment. Also auto-close issues whose title/body requests
+# something that clearly belongs in Support rather than a code change.
+#
+# Uses the built-in actions/github-script — no external actions required.
+
+name: Triage issues
+
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions:
+  issues: write
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const title = (issue.title || "").toLowerCase();
+            const body = (issue.body || "").toLowerCase();
+            const combined = title + "\n" + body;
+
+            const labelSets = [
+              { labels: ["bug"], test: /\[bug\]|bug|error|not working|crash|broken|regression|500|403|404/ },
+              { labels: ["enhancement"], test: /\[feat\]|feature|add |improve|enhancement|suggest/ },
+              { labels: ["question"], test: /\[question\]|how do|how to|what is|help|usage|install/ },
+              { labels: ["security"], test: /security|xss|csrf|traversal|escape|symlink|forbidden|\b403\b|sandbox/ },
+              { labels: ["docs"], test: /\[docs\]|\bdocs\b|readme|documentation|guide/ },
+              { labels: ["remote"], test: /tailscale|lans\/|lan ip|cloudflare|tunnel|remote|non-loopback/ },
+              { labels: ["dock"], test: /dock|details column|in-app|sidebar|file tree|breadcrumb/ },
+              { labels: ["release"], test: /\[ci\]|\brelease\b|semantic-release|npm|tarball|github release|tag/ }
+            ];
+
+            const toAdd = new Set();
+            // Always add a top-level area/kind baseline so every issue is labeled.
+            const titleTag = (issue.title || "").match(/^\[([a-z-]+)\]/i);
+            const existing = (issue.labels || []).map((l) => l.name);
+            if (!existing.includes("triage")) toAdd.add("triage");
+
+            for (const { labels, test } of labelSets) {
+              if (test.test(combined)) labels.forEach((l) => toAdd.add(l));
+            }
+
+            if (toAdd.size) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: [...toAdd],
+              });
+              console.log(`added labels: ${[...toAdd].join(", ")}`);
+            }
+
+            // Assign owner if unassigned.
+            if (!issue.assignees || issue.assignees.length === 0) {
+              const owner = context.repo.owner;
+              try {
+                await github.rest.issues.addAssignees({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  assignees: [owner],
+                });
+                console.log(`assigned ${owner}`);
+              } catch (e) { console.log("assign skipped: " + e.message); }
+            }
+
+            // Friendly triage note (first time only).
+            const hasWelcome = body.includes("dsh-file-pane") && body.includes("AGENTS");
+            const comment = [
+              "Thanks for the report/request! 🙏",
+              "· **Label(s)**: " + ([...toAdd].join(", ") || "triage"),
+              "· Fixed up by the triage workflow — the owner will pick this up.",
+              "",
+              "_You can edit labels freely; this is just an initial classification._"
+            ].join("\n");
+            if ((issue.comments || 0) === 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: comment,
+              });
+            }

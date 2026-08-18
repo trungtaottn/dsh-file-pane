@@ -1,0 +1,49 @@
+# Ensure the labels used by the triage workflow exist (idempotent).
+#
+# GitHub's addLabels API 422s when a label does not exist yet, so this creates
+# any missing labels up front. Runs on workflow_dispatch (manual) and on push
+# to `.github/workflows` so labels are always ready before issues are triaged.
+
+name: Ensure labels
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/*.yml"
+
+permissions:
+  issues: write
+
+jobs:
+  ensure-labels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const wanted = {
+              "bug":          { color: "d73a4a", description: "Something isn't working" },
+              "enhancement":  { color: "a2eeef", description: "New feature or improvement" },
+              "question":     { color: "d876e3", description: "Support / how-to / usage" },
+              "security":     { color: "b60205", description: "Security-sensitive concern" },
+              "docs":         { color: "0075ca", description: "Documentation or AGENTS.md" },
+              "remote":       { color: "1d76db", description: "Remote/LAN/Tailscale/tunnel" },
+              "dock":         { color: "0e8a16", description: "In-app dock / details column" },
+              "release":      { color: "fbca04", description: "Release / CI / npm" },
+              "triage":       { color: "c5def5", description: "Needs a first look" }
+            };
+            const { data: existing } = await github.rest.issues.listLabelsForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+            });
+            const have = new Set(existing.map((l) => l.name));
+            for (const [name, meta] of Object.entries(wanted)) {
+              if (have.has(name)) continue;
+              try {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  name, ...meta,
+                });
+                console.log("created label: " + name);
+              } catch (e) { console.log("skip " + name + ": " + e.message); }
+            }
