@@ -514,6 +514,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-act:hover{color:var(--dsw-alias-label-primary,#eef1f8);background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
         .dshfp-act[data-on]{color:var(--dsw-alias-state-business-primary,#5b96ff);background:var(--dsw-alias-state-business-primary,rgba(91,150,255,.14))}
         .dshfp-sp{flex:1}
+        .dshfp-side-rail{display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 0;flex:1;overflow:hidden}
         .dshfp-side-content{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
         .dshfp-side-content .dshfp-dock-tree{width:100%;min-width:0;flex:1;border-right:0;overflow:auto}
         .dshfp-side.closed .dshfp-side-top{overflow:hidden}
@@ -570,26 +571,29 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
           onMouseEnter={() => { if (!showTree) setTreeHover(true); }}
           onMouseLeave={() => setTreeHover(false)}
         >
-          <div className="dshfp-side-top">
-            {showTree ? (
-              <>
-                <button type="button" className="dshfp-act" data-on={!changeView || undefined} title={t?.("dock.files") ?? "Files"} onClick={() => setChangeView(false)}>
-                  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 2H13a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/></svg>
-                </button>
-                <button type="button" className="dshfp-act" data-on={changeView || undefined} title={t?.("dock.git") ?? "Git / Changes"} onClick={() => setChangeView(true)}>
-                  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h4M4 8h4M4 12h4"/><path d="M12 3.5v9"/><path d="M10.5 5.5 12 4l1.5 1.5M10.5 10.5 12 12l1.5-1.5"/></svg>
-                </button>
-                <span className="dshfp-sp" />
-                <button type="button" className="dshfp-act" title={t?.("dock.collapseTree") ?? "Collapse file tree"} onClick={() => setShowTree(false)}>
-                  <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M10 4 6 8l4 4"/></svg>
-                </button>
-              </>
-            ) : (
-              <button type="button" className="dshfp-act dshfp-fold" data-on={undefined} title={t?.("dock.revealTree") ?? "Show file tree"} onClick={() => setShowTree(true)}>
-                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 3.5h4v3H3z"/><path d="M9 9.5h4v3H9z"/><path d="M5 6.5v3M11 6.5v3M5 6.5h6"/></svg>
+          {showTree ? (
+            <div className="dshfp-side-top">
+              <button type="button" className="dshfp-act" data-on={!changeView || undefined} title={t?.("dock.files") ?? "Files"} onClick={() => setChangeView(false)}>
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 2H13a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/></svg>
               </button>
-            )}
-          </div>
+              <button type="button" className="dshfp-act" data-on={changeView || undefined} title={t?.("dock.git") ?? "Git / Changes"} onClick={() => setChangeView(true)}>
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h4M4 8h4M4 12h4"/><path d="M12 3.5v9"/><path d="M10.5 5.5 12 4l1.5 1.5M10.5 10.5 12 12l1.5-1.5"/></svg>
+              </button>
+              <span className="dshfp-sp" />
+              <button type="button" className="dshfp-act" title={t?.("dock.collapseTree") ?? "Collapse file tree"} onClick={() => setShowTree(false)}>
+                <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M10 4 6 8l4 4"/></svg>
+              </button>
+            </div>
+          ) : (
+            <div className="dshfp-side-rail">
+              <button type="button" className="dshfp-act" data-on={!changeView || undefined} title={t?.("dock.files") ?? "Files"} onClick={() => { setChangeView(false); setShowTree(true); }}>
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 2H13a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/></svg>
+              </button>
+              <button type="button" className="dshfp-act" data-on={changeView || undefined} title={t?.("dock.git") ?? "Git / Changes"} onClick={() => { setChangeView(true); setShowTree(true); }}>
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h4M4 8h4M4 12h4"/><path d="M12 3.5v9"/><path d="M10.5 5.5 12 4l1.5 1.5M10.5 10.5 12 12l1.5-1.5"/></svg>
+              </button>
+            </div>
+          )}
           {showTree ? (
             <div className="dshfp-side-content">
               {changeView ? (
