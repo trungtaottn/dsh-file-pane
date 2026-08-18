@@ -1,0 +1,87 @@
+{
+  "name": "dsh-file-pane",
+  "version": "0.1.0",
+  "description": "Remote file viewer for DeepSeek Harness web: read agent-produced/edited files in a Codex/Warp-style pane, without downloading. Works when DSH is hosted on a homelab/server and you connect from another device.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./core": {
+      "default": "./lib/view-core.mjs"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/trungtaottn/dsh-file-pane.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "file-viewer",
+    "remote",
+    "web-ui",
+    "pane"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build:client": "node scripts/build-client.mjs",
+    "build:assets": "node scripts/build-pdfjs.mjs",
+    "build": "npm run build:client && npm run build:assets",
+    "pretest": "node scripts/build-client.mjs && node scripts/build-pdfjs.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node --input-type=module -e \"import('./lib/index.js').then(m=>console.log('plugin ok:',m.name))\"",
+    "pack": "npm pack --dry-run",
+    "release": "semantic-release",
+    "release:dry": "semantic-release --dry-run"
+  },
+  "files": [
+    "lib",
+    "client",
+    "assets",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "examples"
+  ],
+  "devDependencies": {
+    "@semantic-release/commit-analyzer": "^13.0.1",
+    "@semantic-release/github": "^12.0.9",
+    "@semantic-release/npm": "^13.1.5",
+    "@semantic-release/release-notes-generator": "^14.1.1",
+    "esbuild": "^0.28.2",
+    "jszip": "^3.10.1",
+    "semantic-release": "^25.0.9"
+  },
+  "dependencies": {
+    "mammoth": "^1.12.1",
+    "pdfjs-viewer-element": "^3.2.2"
+  }
+}

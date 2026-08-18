@@ -1,0 +1,20 @@
+{
+  "folders": [
+    {
+      "name": "dsh-file-pane",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "files.exclude": {
+      "**/node_modules": true,
+      "lib/client.js": true,
+      "assets/pdfjs": true
+    },
+    "search.exclude": {
+      "**/node_modules": true,
+      "lib/client.js": true,
+      "assets/pdfjs": true
+    }
+  }
+}

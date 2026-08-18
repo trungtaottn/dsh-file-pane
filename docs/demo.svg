@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#14161d"/><stop offset="1" stop-color="#0e1016"/>
+    </linearGradient>
+  </defs>
+  <rect width="960" height="540" fill="url(#bg)"/>
+  <!-- top bar -->
+  <rect x="0" y="0" width="960" height="46" fill="#191d26"/>
+  <rect x="0" y="46" width="960" height="1" fill="#262c3a"/>
+  <text x="18" y="29" fill="#e6e9f0" font-size="14" font-weight="600">📁 dsh-file-pane</text>
+  <text x="150" y="29" fill="#9aa3b5" font-size="12">workspace root: /home/kaynt</text>
+  <text x="880" y="29" fill="#4f8cff" font-size="12">Home</text>
+  <!-- rail -->
+  <rect x="0" y="47" width="285" height="493" fill="#161a23"/>
+  <rect x="285" y="47" width="1" height="493" fill="#262c3a"/>
+  <rect x="10" y="62" width="265" height="1" fill="#262c3a"/>
+  <text x="16" y="83" fill="#9aa3b5" font-size="12">. 📁 demo/</text>
+  <text x="16" y="105" fill="#e6e9f0" font-size="12"> &nbsp; 📄 sample.md</text>
+  <text x="16" y="127" fill="#e6e9f0" font-size="12"> &nbsp; 📄 report.json</text>
+  <text x="16" y="149" fill="#e6e9f0" font-size="12"> &nbsp; 🖼️ logo.svg</text>
+  <text x="16" y="171" fill="#e6e9f0" font-size="12"> &nbsp; 📄 plans/roadmap.md</text>
+  <!-- crumb row -->
+  <text x="304" y="80" fill="#9aa3b5" font-size="12">↩ up &nbsp; demo/sample.md</text>
+  <text x="850" y="80" fill="#4f8cff" font-size="12">raw  copy</text>
+  <rect x="304" y="96" width="640" height="1" fill="#262c3a"/>
+  <!-- code pane -->
+  <rect x="304" y="112" width="640" height="400" fill="#0b0e14" rx="6"/>
+  <rect x="304" y="112" width="640" height="400" fill="none" stroke="#262c3a" stroke-width="1" rx="6"/>
+  <text x="320" y="150" fill="#9aa3b5" font-size="13">1 &nbsp;<tspan fill="#79c0ff"># Demo — dsh-file-pane</tspan></text>
+  <text x="320" y="172" fill="#e6e9f0" font-size="13">2 &nbsp;</text>
+  <text x="320" y="194" fill="#9aa3b5" font-size="13">3 &nbsp;<tspan fill="#e6e9f0">Read workspace files from a remote device,</tspan></text>
+  <text x="320" y="216" fill="#9aa3b5" font-size="13">4 &nbsp;</text>
+  <text x="320" y="238" fill="#e6e9f0" font-size="13">5 &nbsp;no download required.</text>
+  <text x="320" y="260" fill="#9aa3b5" font-size="13">6 &nbsp;</text>
+  <!-- status bar -->
+  <rect x="0" y="513" width="960" height="27" fill="#191d26"/>
+  <text x="16" y="531" fill="#7ee787" font-size="12">● /browser/?path=demo/sample.md</text>
+  <text x="800" y="531" fill="#9aa3b5" font-size="12">text/markdown · 31 B</text>
+</svg>

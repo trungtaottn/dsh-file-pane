@@ -1,0 +1,15 @@
+# dsh-file-pane bundle patch: mount a read-only remote file pane on the web
+# profile so the user can browse/read workspace files in the DSH web UI from a
+# remote device (homelab) without downloading.
+#
+# Config:
+#   workspaceRoot: absolute workspace root served.
+#     Default: $HOME. Override with env DSH_FILE_PANE_ROOT (or set the row's
+#     `config.workspaceRoot` in a later patch layer, which wins).
+#   maxTextBytes: cap for text renders (default 2 MiB)
+- insert:
+    - id: dsh-file-pane
+      name: 'dsh-file-pane'
+      config:
+        workspaceRoot: !!js process.env.DSH_FILE_PANE_ROOT ?? process.env.HOME
+        maxTextBytes: 2097152

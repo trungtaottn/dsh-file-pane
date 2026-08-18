@@ -1,0 +1,57 @@
+# dsh-file-pane — semantic-release pipeline.
+#
+# Release model (see release.config.mjs):
+#   - push to main → stable channel (latest): 0.x.y
+#   - push to dev   → pre-release channel (beta): 0.x.y-beta.N
+#
+# Requires repo secrets:
+#   - NPM_TOKEN  — npmjs publish token (with publish scope for dsh-file-pane)
+#   - GITHUB_TOKEN is provided automatically by Actions
+# The release job is skipped (no-op) while NPM_TOKEN is missing, so the repo
+# stays green before the token is configured.
+
+name: Release
+
+on:
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm ci
+      - run: npm test
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # semantic-release needs full history for version analysis
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Build client bundle + PDF.js assets
+        run: npm run build
+      - name: Semantic release
+        if: env.NPM_TOKEN != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npx semantic-release
+      - name: Skipped — NPM_TOKEN not configured yet
+        if: env.NPM_TOKEN == ''
+        run: echo "NPM_TOKEN repo secret missing — release skipped (configure it in Settings → Secrets and variables → Actions, then re-run this job)."
