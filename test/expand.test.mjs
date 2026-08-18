@@ -204,3 +204,52 @@ test("apply uses config.workspaceRoot over process.env.HOME", async () => {
 	assert.equal(r.code, 200);
 	assert.ok(r.body.includes("cfg-root"));
 });
+
+/* ── embed variant (in-app dock iframe) ─────────────────────────── */
+
+test("GET ?path=...&embed=1 renders pane without topbar chrome", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-embed-"));
+	await fs.writeFile(path.join(dir, "a.md"), "# hi\nbody");
+	const h = makeHandler(dir);
+	const r = await request(h, "/browser/?path=a.md&embed=1");
+	assert.equal(r.code, 200);
+	assert.match(r.type, /html/);
+	assert.ok(r.body.includes("data-embed"), "expected embed marker on body");
+	assert.ok(!r.body.includes('class="bar"'), "expected topbar omitted in embed mode");
+	assert.ok(r.body.includes("hi"), "expected file content");
+});
+
+test("GET /browser/?embed=1 renders root listing without topbar", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-embed-"));
+	await fs.writeFile(path.join(dir, "a.md"), "x");
+	const h = makeHandler(dir);
+	const r = await request(h, "/browser/?embed=1");
+	assert.equal(r.code, 200);
+	assert.ok(r.body.includes("data-embed"));
+	assert.ok(!r.body.includes('class="bar"'));
+	assert.ok(r.body.includes("a.md"));
+});
+
+test("GET diff with embed=1 omits bar and statusbar", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-embed-diff-"));
+	const f = path.join(dir, "a.md");
+	await fs.writeFile(f, "before\n");
+	const h = makeHandler(dir);
+	await request(h, "/browser/api/spill", "POST", { session: "S1", path: "a.md", old: "before\n", new: "after\n", ts: 1 });
+	await fs.writeFile(f, "after\n");
+	const r = await request(h, "/browser/?path=a.md&diff=1&session=S1&embed=1");
+	assert.equal(r.code, 200);
+	assert.ok(r.body.includes("data-embed"));
+	assert.ok(!r.body.includes('class="bar"'), "expected topbar omitted");
+	assert.ok(!r.body.includes('class="statusbar"'), "expected statusbar omitted");
+	assert.ok(r.body.includes("diffgrid"), "expected diff content kept");
+});
+
+/* ── client bundle: dock mount flag + layout service ────────────── */
+
+test("client bundle exports isDockMounted and declares layout", () => {
+	const { isDockMounted, inject } = loadClientBundle();
+	assert.equal(typeof isDockMounted, "function");
+	assert.equal(isDockMounted(), false); // not mounted outside a live dock
+	assert.ok(inject.includes("layout"), "bundle must declare layout service");
+});
