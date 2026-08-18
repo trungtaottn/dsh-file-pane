@@ -57,6 +57,38 @@ NODE_OPTIONS= npm pack --dry-run     # verify publishable tarball
 NODE_OPTIONS= npm run check          # import lib/index.js sanity
 ```
 
+## Local deployment & preview (IMPORTANT — two separate DSH surfaces)
+
+The local machine runs **two independent DSH profiles on different ports** so
+development never disturbs production:
+
+| Profile | Port | Runs | Source |
+|---|---|---|---|
+| **`web`** (production, service `deepseek-harness-web`) | **3080** | **beta release from GitHub** | pinned tarball, NOT the workspace |
+| **`preview`** | **3091** | the current workspace branch | `link:` → workspace |
+
+- The `web` profile installs the plugin from a **packed tarball release URL**
+  (see `scripts/deploy-local.mjs`), so `git checkout` in the workspace NEVER
+  changes what production serves. `web` only updates when you run the deploy
+  script (or install a newer beta tarball) + restart.
+- The `preview` profile `link:`s the plugin to THIS workspace, so whatever
+  branch is checked out is exactly what :3091 serves.
+
+**Update production to the latest beta release:**
+```sh
+node scripts/deploy-local.mjs            # check + stage new beta (no restart)
+node scripts/deploy-local.mjs --restart  # check + install + restart web
+```
+
+**Preview the feature branch you are developing (does NOT touch web):**
+```sh
+cd /home/kaynt/Code/dsh-file-pane
+git checkout <feature-branch>     # workspace now on the feature
+node scripts/preview-branch.mjs   # boots :3091 from the workspace
+# open http://127.0.0.1:3091 to inspect; production :3080 is untouched
+node scripts/preview-branch.mjs --stop   # shut it down
+```
+
 ## Architecture
 
 ```
