@@ -26,10 +26,19 @@
 
 // Bundled platform constants (no cross-plugin value imports; kept local).
 import * as React from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
 const LOADER_ID = "dsh-file-pane";
 export const name = LOADER_ID;
 const NS = "dsh-file-pane";
+
+/** Window event the produced-file chips dispatch to open a file in the dock. */
+const DOCK_OPEN_EVENT = "dsh-file-pane:open";
+/** Persisted dock open/closed preference key. */
+const DOCK_STORAGE_KEY = "dsh.filePane.dock";
+/** Live mount flag: set by the dock while it is mounted (session-scoped). */
+let dockMounted = false;
+function isDockMounted() { return dockMounted; }
 
 /**
  * Services this client plugin needs BEFORE `apply` runs. The cordis fiber
@@ -37,8 +46,12 @@ const NS = "dsh-file-pane";
  * when every service is provided — without it the bundle can activate before
  * `slots`/`locale`/`connection` exist and `apply` throws (boot failure screen
  * "Failed to load plugins: dsh-file-pane").
+ *
+ * `layout` is required by the in-app dock (details column actions) — dropping
+ * it makes `ctx.layout` undefined and the dock silently abdicates, so apply
+ * throws loudly instead (same discipline as dsh-better-sidebar-lite).
  */
-export const inject = ["slots", "locale", "connection", "conversationEvents", "sessions"];
+export const inject = ["slots", "locale", "connection", "conversationEvents", "sessions", "layout"];
 
 /** Trailing segment of a slash-or-backslash path. */
 function basename(p) {
@@ -169,10 +182,139 @@ function selectProducedPane(isLoopback) {
   };
 }
 
-/** Click a produced-file chip → open the dsh-file-pane viewer for it. */
+/**
+ * Click a produced-file chip → open the file in the in-app dock (when the dock
+ * is mounted — i.e. a session is current) or fall back to navigating the pane
+ * route. The dock listens for the window event and loads the file; when the
+ * dock is not mounted (blank session / not composed) we keep the old behavior.
+ */
 function openInPane(rel, resolvePath) {
+  const path = resolvePath(rel);
+  if (dockMounted) {
+    window.dispatchEvent(new CustomEvent(DOCK_OPEN_EVENT, { detail: { path } }));
+    return;
+  }
   // Same tab preserves the session; a right-click / cmd-click still gets raw nav.
-  window.location.assign("/browser/?path=" + encodeURIComponent(resolvePath(rel)));
+  window.location.assign("/browser/?path=" + encodeURIComponent(path));
+}
+
+/* ── in-app dock (right details column, Option A1) ─────────────── */
+
+/** Read the persisted open/closed preference; anything malformed defaults to open. */
+function readDockOpen() {
+  if (typeof localStorage === "undefined") return true;
+  try {
+    const raw = localStorage.getItem(DOCK_STORAGE_KEY);
+    if (raw === null) return true;
+    return JSON.parse(raw).open !== false;
+  } catch { return true; }
+}
+
+function persistDockOpen(open) {
+  if (typeof localStorage === "undefined") return;
+  try { localStorage.setItem(DOCK_STORAGE_KEY, JSON.stringify({ open })); } catch { /* quota/denied */ }
+}
+
+/** The layout face the dock drives (open/close the details column). */
+const layoutActions = {
+  open() { this.layout?.openDetails?.(); },
+  close() { this.layout?.closeDetails?.(); }
+};
+
+/**
+ * DockRoot: the frame's right `details` column occupant. The grid reserves
+ * space beside the conversation (no overlay while in-flow); when the column is
+ * closed for any reason (blank session, narrow viewport) the dock renders
+ * absolute at the right edge instead of vanishing (floating fallback), like
+ * dsh-better-sidebar-lite.
+ */
+function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces, layout }) {
+  const rootRef = useRef(null);
+  const [path, setPath] = useState(undefined); // undefined → root listing
+  const [open, setOpen] = useState(readDockOpen);
+  const [floating, setFloating] = useState(false);
+
+  // Track whether the details column has real width (AppFrame gates it on a
+  // current non-blank session + viewport). When closed while open → float.
+  useEffect(() => {
+    const el = rootRef.current?.parentElement?.parentElement;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const read = () => { setFloating(el.getBoundingClientRect().width === 0); };
+    read();
+    const obs = new ResizeObserver(read);
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  // Open/close via the layout store; persist preference. On mount, open the
+  // column if we default to open (matches the source plugin).
+  useEffect(() => {
+    dockMounted = true;
+    if (open) layout?.openDetails?.();
+    const onOpen = (e) => { setPath(e.detail?.path); setOpen(true); persistDockOpen(true); layout?.openDetails?.(); };
+    window.addEventListener(DOCK_OPEN_EVENT, onOpen);
+    return () => { dockMounted = false; window.removeEventListener(DOCK_OPEN_EVENT, onOpen); };
+  }, [layout]);
+
+  const toggle = useCallback((next) => {
+    setOpen(next); persistDockOpen(next);
+    if (next) layout?.openDetails?.(); else layout?.closeDetails?.();
+  }, [layout]);
+
+  // Ctrl/Cmd+Shift+B toggles the dock.
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === "KeyB") {
+        e.preventDefault();
+        setOpen((o) => { const next = !o; persistDockOpen(next); if (next) layout?.openDetails?.(); else layout?.closeDetails?.(); return next; });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [layout]);
+
+  if (!open) return null;
+
+  const src = "/browser/?path=" + (path === undefined ? "" : encodeURIComponent(path)) + "&embed=1";
+  const name = path === undefined ? "files root" : basename(path);
+  return (
+    <div
+      ref={rootRef}
+      data-dsh-file-pane-dock="1"
+      data-floating={floating || undefined}
+      role="region"
+      aria-label={t?.("dock.title") ?? "File pane"}
+      className="dshfp-dock"
+    >
+      <style>{`
+        .dshfp-dock{display:flex;flex-direction:column;height:100%;min-width:0;background:var(--dsw-alias-bg-base,#0f1117);color:var(--dsw-alias-label-primary,#eef1f8);font:13px/1.4 ui-monospace,Menlo,Consolas,monospace}
+        .dshfp-dock[data-floating]{position:absolute;top:16px;right:16px;bottom:16px;width:360px;z-index:60;border:1px solid var(--dsw-alias-border-l3,rgba(255,255,255,.15));border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden;background:var(--dsw-alias-bg-base,#0f1117)}
+        .dshfp-dock-head{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));flex:none;min-height:34px}
+        .dshfp-dock-head .t{font-weight:600;color:var(--dsw-alias-label-primary,#eef1f8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+        .dshfp-dock-head button{background:none;border:0;color:var(--dsw-alias-label-secondary,#c7ccd9);cursor:pointer;padding:2px 6px;border-radius:5px;font:inherit;line-height:1}
+        .dshfp-dock-head button:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-dock iframe{flex:1;width:100%;border:0;min-height:0;background:#0f1117}
+      `}</style>
+      <div className="dshfp-dock-head">
+        <span className="t">{t?.("dock.title") ?? "Files"}{path !== undefined ? ` · ${name}` : ""}</span>
+        <button type="button" title={t?.("dock.openTab") ?? "Open in new tab"} onClick={() => window.open(src, "_blank", "noopener")}>↗</button>
+        <button type="button" title={t?.("dock.close") ?? "Close"} onClick={() => toggle(false)}>✕</button>
+      </div>
+      <iframe key={src} src={src} title={t?.("dock.title") ?? "File pane"} />
+    </div>
+  );
+}
+
+/** The details-column entry (a closure over injected services). */
+function createDockEntry(services) {
+  return (props) => (
+    <DockRoot
+      t={services.t}
+      useSessions={props.useSessions}
+      useWorkspaces={props.useWorkspaces}
+      layout={services.layout}
+    />
+  );
 }
 
 /** The remote produced-files row: chips that open the pane viewer. */
@@ -208,15 +350,20 @@ function ProducedPaneRow({ matched: paths, t, resolvePath }) {
 }
 
 /**
- * Client plugin body: register the dictionary and the turn-tail chain entry
- * at priority -1 (before the built-in row) so remote viewers get the pane
- * navigation instead of a dead Host-open.
+ * Client plugin body: register the dictionary, the turn-tail chain entry at
+ * priority -1 (before the built-in row), and the in-app dock occupying the
+ * frame's right `details` column (priority -1 shadows ui-conversation's
+ * DetailsPanel — the sanctioned way to take over a single seat).
  */
 function apply(ctx) {
-  // Both seats are guaranteed by the `inject` declaration above.
+  // All seats are guaranteed by the `inject` declaration above.
   const slots = ctx.get("slots");
   const connection = ctx.get("connection");
   const sessions = ctx.get("sessions");
+  const layout = ctx.get("layout");
+  if (layout === undefined) {
+    throw new Error("dsh-file-pane: ctx.layout missing — add 'layout' to the bundle-exported inject list in client/index.tsx");
+  }
   // Connection classification is stable per page loads (URL hostname), so read
   // it once and close over the same value for both selector and inject.
   const isLoopback = connection.isLoopback === true;
@@ -234,8 +381,8 @@ function apply(ctx) {
     return resolvePanePath(cwd, rel);
   };
   ctx.effect(() => ctx.locale.register(NS, {
-    en: { "produced.label": "Open in pane" },
-    zh: { "produced.label": "在面板中打开" }
+    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab" },
+    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开" }
   }), "dsh-file-pane: dictionaries");
   // Passive diff spill: agent edit before/after -> host RAM (per open session).
   ctx.conversationEvents.register(makeDiffSpillDefinition(() =>
@@ -253,6 +400,36 @@ function apply(ctx) {
       ProducedPaneRow
     )
   );
+  // In-app dock: own the frame's right details column. priority -1 shadows the
+  // built-in DetailsPanel (tool details); inject (not bare register) rides the
+  // declaration lifetime — re-registers after the declaring slot is restored.
+  const DockEntry = createDockEntry({ t: ctx.locale.bind(NS), layout });
+  slots.inject("details", () =>
+    slots.register({ name: "details", priority: -1, locale: NS }, DockEntry)
+  );
+  // Footer toggle restores the dock from the left sidebar when collapsed
+  // (declared by ui-sidebar; rides the declaration lifetime like the dock).
+  const FooterToggle = () => (
+    <button
+      type="button"
+      data-dsh-file-pane-toggle="1"
+      title="Toggle file pane (Ctrl/Cmd+Shift+B)"
+      aria-label="Toggle file pane"
+      onClick={() => {
+        const evt = new CustomEvent(DOCK_OPEN_EVENT, { detail: { path: undefined } });
+        window.dispatchEvent(evt); // opens + loads root
+      }}
+      style={{
+        background: "none", border: "0", color: "inherit", cursor: "pointer",
+        fontSize: "13px", padding: "4px", borderRadius: "6px", display: "inline-flex"
+      }}
+    >
+      <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 2.5h5l3 3V13.5H4z"/><path d="M9 2.5V6h3"/></svg>
+    </button>
+  );
+  slots.inject("sidebar.footer.action", () =>
+    slots.register({ name: "sidebar.footer.action", id: "dsh-file-pane-toggle", order: 10 }, FooterToggle)
+  );
 }
 
-export { LOADER_ID, apply, producedForClosing, selectProducedPane, narrowDiffs, resolvePanePath };
+export { LOADER_ID, apply, producedForClosing, selectProducedPane, narrowDiffs, resolvePanePath, isDockMounted };

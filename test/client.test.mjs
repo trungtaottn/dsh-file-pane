@@ -74,15 +74,15 @@ test("apply waits for its services via inject (boot-safety regression)", () => {
     else globalThis.window = prev;
   }
   const { apply, inject } = captured.factory(() => ({ createElement: () => null, Fragment: {} }));
-  for (const svc of ["slots", "locale", "connection", "conversationEvents", "sessions"]) {
+  for (const svc of ["slots", "locale", "connection", "conversationEvents", "sessions", "layout"]) {
     assert.ok(inject.includes(svc), `plugin must declare service ${svc}`);
   }
 
   // Without the declared services the plugin must NOT be callable (its apply
   // assumes they exist) — the loader enforces this by inject-waiting. Calling
   // apply with a bare ctx should throw, proving the plugin is not silently
-  // activatable without its seats.
-  assert.throws(() => apply({ get: () => undefined }), /isLoopback|slots|register/);
+  // activatable without its seats (missing layout fails loudly first).
+  assert.throws(() => apply({ get: () => undefined }), /ctx\.layout missing|isLoopback|slots|register/);
 
   // And it must work once the services are provided (the loader order).
   // The real ctx exposes declared services as direct properties (ctx.locale,
@@ -92,7 +92,7 @@ test("apply waits for its services via inject (boot-safety regression)", () => {
     inject: (_key, cb) => { calls.inject++; cb(); return () => {}; },
     register: (_opts, _comp) => { calls.register++; return () => {}; }
   };
-  const locale = { register: (_ns, _dict) => { calls.locale++; } };
+  const locale = { register: (_ns, _dict) => { calls.locale++; }, bind: () => (() => {}) };
   const conversationEvents = { register: (_def) => { calls.events++; return () => {}; } };
   const sessions = { list: { getSnapshot: () => ({ current: "S1" }) } };
   const ctx = {
@@ -100,12 +100,14 @@ test("apply waits for its services via inject (boot-safety regression)", () => {
     locale,
     conversationEvents,
     connection: { isLoopback: false },
-    get: (name) => ({ slots, locale, conversationEvents, connection: { isLoopback: false }, sessions })[name],
+    layout: { openDetails() {}, closeDetails() {} },
+    get: (name) => ({ slots, locale, conversationEvents, connection: { isLoopback: false }, sessions, layout: ctx.layout })[name],
     effect: (cb) => { cb(); return () => {}; }
   };
   apply(ctx);
-  assert.equal(calls.inject, 1);
-  assert.equal(calls.register, 1);
+  // two chain entries (turnTail + details) + one footer action slot
+  assert.equal(calls.inject, 3);
+  assert.equal(calls.register, 3);
   assert.equal(calls.locale, 1);
   assert.equal(calls.events, 1);
 });
