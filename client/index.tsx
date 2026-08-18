@@ -252,6 +252,19 @@ function breadcrumbParts(p) {
   return out;
 }
 
+/**
+ * Strip the workspace base prefix from an absolute dock path, returning the
+ * workspace-relative spelling suitable for the breadcrumb/Up display. When
+ * `base` is unknown or `p` lies outside it, `p` is returned unchanged. Pure.
+ */
+function stripBase(p, base) {
+  if (!p) return undefined;
+  if (!base) return p;
+  if (p === base) return undefined;
+  if (p.startsWith(base + "/")) return p.slice(base.length + 1);
+  return p;
+}
+
 /** Dock last-location persist key (path + optional session, so diff works on reopen). */
 const DOCK_STATE_KEY = "dsh.filePane.state";
 
@@ -273,6 +286,17 @@ function persistDockState(state) {
 async function fetchListing(path) {
   try {
     const res = await fetch("/browser/?path=" + encodeURIComponent(path ?? "") + "&json=1");
+    if (!res.ok) return null;
+    const data = await res.json();
+    return Array.isArray(data?.entries) ? data.entries : null;
+  } catch { return null; }
+}
+
+/** Fetch the list of files changed in a session (host spill lens). */
+async function fetchChanged(session) {
+  if (!session) return null;
+  try {
+    const res = await fetch("/browser/api/changed?session=" + encodeURIComponent(session));
     if (!res.ok) return null;
     const data = await res.json();
     return Array.isArray(data?.entries) ? data.entries : null;
@@ -360,39 +384,30 @@ function Breadcrumb({ path, onNavigate }) {
 }
 
 /**
- * DockRoot: the frame's right `details` column occupant. The grid reserves
- * space beside the conversation (no overlay while in-flow); when the column is
- * closed for any reason (blank session, narrow viewport) the dock renders
- * absolute at the right edge instead of vanishing (floating fallback), like
- * dsh-better-sidebar-lite.
+ * DockRoot: the frame's right `details` column occupant (in-flow). The DSH
+ * AppFrame reserves this column beside the conversation, so the conversation
+ * resizes around the dock instead of it overlaying the UI — consistent with the
+ * native DSH look. Contains a workspace-rooted file tree, breadcrumb nav, diff,
+ * and the session changed-files list.
  */
-function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces, layout, getSession }) {
+function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces, layout, getSession, getCwd }) {
   const rootRef = useRef(null);
   const [path, setPath] = useState(undefined); // undefined → root listing
   const [session, setSession] = useState(undefined);
   const [diff, setDiff] = useState(false); // false = view, true = version diff
   const [open, setOpen] = useState(readDockOpen);
   const [showTree, setShowTree] = useState(true);
-  const [floating, setFloating] = useState(false);
+  const [treeHover, setTreeHover] = useState(false); // hover-reveal popup (file open, tree hidden)
+  const [hoverAct, setHoverAct] = useState(null); // which activity the popup follows while hovering the rail (null=follow current view)
   const [stamp, setStamp] = useState(0);
+  const [changeView, setChangeView] = useState(false); // sidebar shows Changes (VSCode Source-Control style) vs the file tree
+  const [changed, setChanged] = useState([]);
 
   // Restore the last docked path/session once (before any user open).
   const seeded = useRef(false);
 
-  // Track whether the details column has real width (AppFrame gates it on a
-  // current non-blank session + viewport). When closed while open → float.
-  useEffect(() => {
-    const el = rootRef.current?.parentElement?.parentElement;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const read = () => { setFloating(el.getBoundingClientRect().width === 0); };
-    read();
-    const obs = new ResizeObserver(read);
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, []);
-
-  // Open/close via the layout store; persist preference. On mount, open the
-  // column if we default to open (matches the source plugin).
+  // Open/close via the layout store (in-flow details column); persist preference.
+  // On mount, open the column if we default to open.
   useEffect(() => {
     dockMounted = true;
     const initial = readDockState();
@@ -408,12 +423,13 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
       const s = e.detail?.session;
       seeded.current = true;
       setPath(p); setSession(s); setDiff(false);
+      setShowTree(!p); // a produced-file open focuses the content (hide tree); root open shows the tree
       persistDockState({ path: p, session: s });
       setOpen(true); persistDockOpen(true); layout?.openDetails?.();
     };
     window.addEventListener(DOCK_OPEN_EVENT, onOpen);
     return () => { dockMounted = false; window.removeEventListener(DOCK_OPEN_EVENT, onOpen); };
-  }, [layout]);
+  }, [layout, open]);
 
   const toggle = useCallback((next) => {
     setOpen(next); persistDockOpen(next);
@@ -425,31 +441,70 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
     const onKey = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === "KeyB") {
         e.preventDefault();
-        setOpen((o) => { const next = !o; persistDockOpen(next); if (next) layout?.openDetails?.(); else layout?.closeDetails?.(); return next; });
+        setOpen((o) => {
+          const next = !o;
+          persistDockOpen(next);
+          if (next) layout?.openDetails?.(); else layout?.closeDetails?.();
+          return next;
+        });
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [layout]);
 
+  // Session "changed files": while the Changes view is open, poll the host spill
+  // lens so newly edited files appear without user action.
+  useEffect(() => {
+    const sid = session ?? (typeof getSession === "function" ? getSession() : undefined);
+    if (!changeView || !sid) { if (!changeView) setChanged([]); return; }
+    let cancelled = false;
+    const load = async () => {
+      const c = await fetchChanged(sid);
+      if (!cancelled && c) setChanged((prev) => {
+        const has = new Set(c.map((e) => e.path));
+        return c.concat(prev.filter((p) => !has.has(p.path)));
+      });
+    };
+    load();
+    const t = setInterval(load, 4000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [changeView, session, getSession]);
+
   if (!open) return null;
 
   const effSession = session ?? (typeof getSession === "function" ? getSession() : undefined);
-  const src = dockSrc(path, { diff, session: effSession });
-  const needSessionNote = diff && isTextPath(path) && effSession === undefined;
+  // Workspace base = the current session's cwd (the folder being worked on).
+  // The file tree + Home root here instead of the host root ($HOME) so the dock
+  // shows only the active workspace, not the whole hosting machine.
+  const base = typeof getCwd === "function" ? getCwd() : undefined;
+  const viewPath = path ?? base; // undefined path → the workspace root listing
+  const src = dockSrc(viewPath, { diff, session: effSession });
+  const needSessionNote = diff && isTextPath(viewPath) && effSession === undefined;
   const nav = (next) => { setPath(next); }; // navigating resets diff
+  // Opening a file focuses the content and hides the tree (tab-like); the tree
+  // stays reachable via a hover-reveal strip. Navigating to a dir re-shows it.
+  const openFile = (p) => { setPath(p); setDiff(false); setShowTree(false); persistDockState({ path: p, session: effSession }); };
+  const navDir = (p) => { setPath(p); setDiff(false); setShowTree(true); }; // dir/root nav keeps the tree visible
+  // VSCode-style activity toggle: clicking the ACTIVE view's icon collapses the
+  // panel back to the rail; clicking it again (or another icon) opens/switches.
+  const onAct = (v) => {
+    if (showTree && changeView === v) setShowTree(false);
+    else { setChangeView(v); setShowTree(true); }
+  };
+  const relC = stripBase(viewPath, base);    // path relative to the workspace (for breadcrumb/Up)
+  const upRel = upPath(relC);                // parent relative to the workspace (undefined = at base)
+  const navClose = (rel) => nav(base && rel ? base + "/" + rel.replace(/^\/+/, "") : base ?? undefined);
   return (
     <div
       ref={rootRef}
       data-dsh-file-pane-dock="1"
-      data-floating={floating || undefined}
       role="region"
       aria-label={t?.("dock.title") ?? "File pane"}
       className="dshfp-dock"
     >
       <style>{`
-        .dshfp-dock{display:flex;flex-direction:column;height:100%;min-width:0;background:var(--dsw-alias-bg-base,#0f1117);color:var(--dsw-alias-label-primary,#eef1f8);font:13px/1.4 ui-monospace,Menlo,Consolas,monospace}
-        .dshfp-dock[data-floating]{position:absolute;top:16px;right:16px;bottom:16px;width:360px;z-index:60;border:1px solid var(--dsw-alias-border-l3,rgba(255,255,255,.15));border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden;background:var(--dsw-alias-bg-base,#0f1117)}
+        .dshfp-dock{display:flex;flex-direction:column;height:100%;min-width:0;overflow:hidden;background:var(--dsw-alias-bg-base,#0f1117);color:var(--dsw-alias-label-primary,#eef1f8);font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;border-left:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12))}
         .dshfp-dock-head{display:flex;align-items:center;gap:4px;padding:5px 8px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));flex:none;min-height:34px;flex-wrap:wrap}
         .dshfp-dock-head .t{font-weight:600;color:var(--dsw-alias-label-primary,#eef1f8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;padding:0 4px}
         .dshfp-dock-head button{background:none;border:0;color:var(--dsw-alias-label-secondary,#c7ccd9);cursor:pointer;padding:3px 6px;border-radius:5px;font:inherit;line-height:1;display:inline-flex;align-items:center}
@@ -459,6 +514,18 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-dock-note{background:rgba(255,191,0,.08);color:var(--dsw-alias-state-warn-primary,#f0b386);padding:4px 8px;font-size:11px;line-height:1.4;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));flex:none}
         .dshfp-dock-body{display:flex;flex:1;min-height:0}
         .dshfp-dock-tree{width:180px;min-width:180px;border-right:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));overflow:auto;padding:4px 0;flex:none}
+        .dshfp-side{display:flex;flex-direction:row;width:230px;min-width:0;flex:none;overflow:hidden;transition:width .18s ease}
+        .dshfp-side.closed{width:30px;position:relative;overflow:visible}
+        .dshfp-rail{width:30px;flex:none;display:flex;flex-direction:column;align-items:center;gap:3px;padding:5px 0;border-right:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));background:var(--dsw-alias-bg-base,#0f1117);overflow:hidden}
+        .dshfp-act{background:none;border:0;color:var(--dsw-alias-label-tertiary,#9aa3b5);cursor:pointer;padding:3px 5px;border-radius:5px;display:inline-flex;align-items:center;flex:none;line-height:1}
+        .dshfp-act:hover{color:var(--dsw-alias-label-primary,#eef1f8);background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
+        .dshfp-act[data-on]{color:var(--dsw-alias-state-business-primary,#5b96ff);background:transparent;box-shadow:inset 2px 0 0 var(--dsw-alias-state-business-primary,#5b96ff)}
+        .dshfp-sp{flex:1}
+        .dshfp-panel{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
+        .dshfp-panel .dshfp-dock-tree{width:100%;min-width:0;flex:1;border-right:0;overflow:auto}
+        .dshfp-tree-pop{position:absolute;left:100%;top:0;bottom:0;width:200px;background:var(--dsw-alias-bg-base,#0f1117);border-right:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));box-shadow:6px 0 16px rgba(0,0,0,.35);z-index:19;overflow:auto}
+        .dshfp-changes{display:flex;flex-direction:column;gap:0}
+        .dshfp-changes-head{padding:5px 8px 3px;font-family:var(--dsw-alias-font-sans,ui-monospace,Menlo,Consolas,monospace);font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--dsw-alias-label-tertiary,#9aa3b5);flex:none}
         .dshfp-dock iframe{flex:1;width:100%;border:0;min-height:0;background:#0f1117}
         .dshfp-tree-l{list-style:none;margin:0;padding:0}
         .dshfp-tree-c{list-style:none;margin:0;padding:0}
@@ -475,21 +542,25 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-crumb-link{background:none;border:0;color:var(--dsw-alias-label-secondary,#c7ccd9);cursor:pointer;font:inherit;line-height:1.3;padding:1px 3px;border-radius:4px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         .dshfp-crumb-link:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
         .dshfp-crumb-cur{color:var(--dsw-alias-label-primary,#eef1f8);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .dshfp-changed{flex:none;max-height:40%;overflow:auto;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));padding:4px 6px}
+        .dshfp-changed-item{display:flex;align-items:center;gap:6px;width:100%;text-align:left;background:none;border:0;cursor:pointer;padding:2px 6px;border-radius:4px;color:var(--dsw-alias-label-secondary,#c7ccd9);font:inherit;font-size:12px;white-space:nowrap;overflow:hidden}
+        .dshfp-changed-item:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-changed-item .nm{overflow:hidden;text-overflow:ellipsis}
+        .dshfp-changed-dot{flex:none;width:16px;text-align:center;font-size:10px;font-weight:700;border-radius:3px;padding:0 2px;color:var(--dsw-alias-bg-base,#0f1117)}
+        .dshfp-changed-dot[data-status="added"]{background:#2fbf71}
+        .dshfp-changed-dot[data-status="modified"]{background:#e8b341}
       `}</style>
       <div className="dshfp-dock-head">
-        <button type="button" title={t?.("dock.home") ?? "Files root"} onClick={() => { nav(undefined); setDiff(false); }}>
+        <button type="button" title={t?.("dock.home") ?? "Files root"} onClick={() => { navDir(base); }}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 7 8 2.5 13.5 7"/><path d="M4 6.5V13h8V6.5"/></svg>
         </button>
-        <button type="button" title={t?.("dock.up") ?? "Up one level"} disabled={!path} onClick={() => { nav(upPath(path)); setDiff(false); }}>
+        <button type="button" title={t?.("dock.up") ?? "Up one level"} disabled={!path || !upRel} onClick={() => { navDir(navClose(upRel)); }}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 10.5 8 5.5l5 5"/></svg>
         </button>
         <button type="button" title={t?.("dock.reload") ?? "Reload"} onClick={() => setStamp((s) => s + 1)}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 3.5V7h-3.5"/><path d="M3 12.5V9h3.5"/><path d="M13 7a5 5 0 0 0-8.5-3.5L3 5M13 9l-1.5 1.5A5 5 0 0 1 3 7"/></svg>
         </button>
-        <Breadcrumb path={path} onNavigate={(p) => { setPath(p); setDiff(false); }} />
-        <button type="button" title={t?.("dock.tree") ?? "Toggle file tree"} data-on={showTree || undefined} onClick={() => setShowTree((v) => !v)}>
-          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 3.5h4v3H3z"/><path d="M9 9.5h4v3H9z"/><path d="M5 6.5v3M11 6.5v3M5 6.5h6"/></svg>
-        </button>
+        <Breadcrumb path={relC} onNavigate={(rel) => { navDir(navClose(rel)); }} />
         <button type="button" title={t?.("dock.diff") ?? "Version diff"} data-on={diff && isTextPath(path) || undefined} disabled={!isTextPath(path) || path === undefined} onClick={() => setDiff((v) => !v)}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h4M4 8h4M4 12h4"/><path d="M12 3.5v9"/><path d="M10.5 5.5 12 4l1.5 1.5M10.5 10.5 12 12l1.5-1.5"/></svg>
         </button>
@@ -500,11 +571,61 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
       </div>
       {needSessionNote ? <div className="dshfp-dock-note">{t?.("dock.noSession") ?? "No session available for diff — open the file from a produced-file chip in chat first."}</div> : null}
       <div className="dshfp-dock-body">
-        {showTree ? (
-          <nav className="dshfp-dock-tree" aria-label={t?.("dock.tree") ?? "File tree"}>
-            <FileTree path={undefined} onOpen={(p) => { setPath(p); setDiff(false); }} activePath={path} />
-          </nav>
-        ) : null}
+        <div
+          className={"dshfp-side" + (showTree ? "" : " closed")}
+          onMouseLeave={() => { setTreeHover(false); setHoverAct(null); }}
+        >
+          <div className="dshfp-rail">
+            <button type="button" className="dshfp-act" onMouseEnter={() => { setHoverAct(false); if (!showTree) setTreeHover(true); }} data-on={!changeView || undefined} title={t?.("dock.files") ?? "Files"} onClick={() => onAct(false)}>
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 2H13a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/></svg>
+            </button>
+            <button type="button" className="dshfp-act" onMouseEnter={() => { setHoverAct(true); if (!showTree) setTreeHover(true); }} data-on={changeView || undefined} title={t?.("dock.git") ?? "Git / Changes"} onClick={() => onAct(true)}>
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h4M4 8h4M4 12h4"/><path d="M12 3.5v9"/><path d="M10.5 5.5 12 4l1.5 1.5M10.5 10.5 12 12l1.5-1.5"/></svg>
+            </button>
+            <span className="dshfp-sp" />
+            <button type="button" className="dshfp-act" title={showTree ? (t?.("dock.collapseTree") ?? "Collapse") : (t?.("dock.revealTree") ?? "Show")} onClick={() => setShowTree((v) => !v)}>
+              {showTree
+                ? <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M11 4 6 8l5 4"/></svg>
+                : <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 4l5 4-5 4"/></svg>}
+            </button>
+          </div>
+          {showTree ? (
+            <div className="dshfp-panel">
+              {changeView ? (
+                <div className="dshfp-dock-tree dshfp-changes" aria-label={t?.("dock.changes") ?? "Changes"}>
+                  <div className="dshfp-changes-head">{t?.("dock.changesHead") ?? "Changes in this session"}</div>
+                  {changed.length === 0
+                    ? <div className="dshfp-tree-empty">( none changed yet )</div>
+                    : changed.map((c) => (
+                      <button type="button" key={c.path} className="dshfp-changed-item" onClick={() => { setPath(c.path); setDiff(true); setShowTree(false); const sid = effSession; if (sid) { setSession(sid); persistDockState({ path: c.path, session: sid }); } }}>
+                        <span className="dshfp-changed-dot" data-status={c.status}>{c.status === "added" ? "A" : "M"}</span>
+                        <span className="nm">{c.path}</span>
+                      </button>
+                    ))}
+                </div>
+              ) : (
+                <nav className="dshfp-dock-tree" aria-label={t?.("dock.tree") ?? "File tree"}>
+                  <FileTree path={base} onOpen={openFile} activePath={viewPath} />
+                </nav>
+              )}
+            </div>
+          ) : (
+            treeHover ? (
+              <nav className="dshfp-dock-tree dshfp-tree-pop" aria-label={t?.("dock.tree") ?? "File tree"} onMouseEnter={() => setTreeHover(true)} onMouseLeave={() => setTreeHover(false)}>
+                {(hoverAct ?? changeView)
+                  ? changed.length === 0
+                    ? <div className="dshfp-tree-empty">( none changed yet )</div>
+                    : changed.map((c) => (
+                      <button type="button" key={c.path} className="dshfp-changed-item" onClick={() => { setPath(c.path); setDiff(true); setShowTree(false); const sid = effSession; if (sid) { setSession(sid); persistDockState({ path: c.path, session: sid }); } }}>
+                        <span className="dshfp-changed-dot" data-status={c.status}>{c.status === "added" ? "A" : "M"}</span>
+                        <span className="nm">{c.path}</span>
+                      </button>
+                    ))
+                  : <FileTree path={base} onOpen={openFile} activePath={viewPath} />}
+              </nav>
+            ) : null
+          )}
+        </div>
         <iframe key={path + ":" + diff + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
       </div>
     </div>
@@ -520,6 +641,7 @@ function createDockEntry(services) {
       useWorkspaces={props.useWorkspaces}
       layout={services.layout}
       getSession={services.getSession}
+      getCwd={services.getCwd}
     />
   );
 }
@@ -595,19 +717,21 @@ function apply(ctx) {
   const getSession = () => {
     try { return sessions?.list?.getSnapshot?.().current; } catch { return undefined; }
   };
-  const resolvePath = (rel) => {
-    let cwd;
+  // The currently open session's working directory — the workspace being worked
+  // on. Used to root the dock file tree (and produced-path resolution) at the
+  // active workspace instead of the host root ($HOME).
+  const getCwd = () => {
     try {
       const snapshot = sessions?.list?.getSnapshot?.();
       const current = snapshot?.current;
       const entry = current != null ? snapshot?.entries?.find((e) => e.id === current) : undefined;
-      cwd = entry?.cwd;
-    } catch { /* keep undefined → fall back to raw relative path */ }
-    return resolvePanePath(cwd, rel);
+      return entry?.cwd;
+    } catch { return undefined; }
   };
+  const resolvePath = (rel) => resolvePanePath(getCwd(), rel);
   ctx.effect(() => ctx.locale.register(NS, {
-    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.tree": "Toggle file tree", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first." },
-    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.tree": "切换文件树", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件" }
+    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.tree": "File tree", "dock.files": "Files", "dock.git": "Git / Changes", "dock.changes": "Changes", "dock.changesHead": "Changes in this session", "dock.revealTree": "Show file tree", "dock.collapseTree": "Collapse file tree", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first." },
+    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.tree": "文件树", "dock.files": "文件", "dock.git": "Git / 更改", "dock.changes": "更改", "dock.changesHead": "本会话的更改", "dock.revealTree": "显示文件树", "dock.collapseTree": "折叠文件树", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件" }
   }), "dsh-file-pane: dictionaries");
   // Passive diff spill: agent edit before/after -> host RAM (per open session).
   ctx.conversationEvents.register(makeDiffSpillDefinition(getSession));
@@ -623,10 +747,11 @@ function apply(ctx) {
       ProducedPaneRow
     )
   );
-  // In-app dock: own the frame's right details column. priority -1 shadows the
-  // built-in DetailsPanel (tool details); inject (not bare register) rides the
-  // declaration lifetime — re-registers after the declaring slot is restored.
-  const DockEntry = createDockEntry({ t: ctx.locale.bind(NS), layout, getSession });
+  // In-app dock: owns the frame's right details column (in-flow — it shares the
+  // space with the conversation, which resizes around it, matching DSH's native
+  // look). priority -1 shadows the built-in DetailsPanel (tool details); this
+  // accepted trade-off keeps the pane in the same column treatment as DSH.
+  const DockEntry = createDockEntry({ t: ctx.locale.bind(NS), layout, getSession, getCwd });
   slots.inject("details", () =>
     slots.register({ name: "details", priority: -1, locale: NS }, DockEntry)
   );
@@ -655,4 +780,4 @@ function apply(ctx) {
   );
 }
 
-export { LOADER_ID, apply, producedForClosing, selectProducedPane, narrowDiffs, resolvePanePath, isDockMounted, upPath, dockSrc, breadcrumbParts };
+export { LOADER_ID, apply, producedForClosing, selectProducedPane, narrowDiffs, resolvePanePath, isDockMounted, upPath, dockSrc, breadcrumbParts, stripBase };

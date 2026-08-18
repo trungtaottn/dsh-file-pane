@@ -6,6 +6,7 @@ import * as path from "node:path";
 import JSZip from "jszip";
 
 import { resolveWithin, readFileResult, mimeFor } from "../lib/view-core.mjs";
+import { paneFileHTML } from "../lib/view-html.mjs";
 import { docxPreview } from "../lib/docx.mjs";
 import { apply as applyHost } from "../lib/index.js";
 
@@ -111,8 +112,13 @@ test("GET ?path=<broken>.docx falls back to 200 HTML (no crash)", async () => {
 	assert.match(r.type, /html/);
 });
 
-test("GET /browser/vendor/pdfjs/pdfjs-viewer-element.js serves the asset", async () => {
-	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-vendor-"));
+test("paneFileHTML PDF render fills the frame (no fixed 78vh)", () => {
+	const html = paneFileHTML({ path: "dir/a.pdf", name: "a.pdf", kind: "pdf", mime: "application/pdf", size: 42 }, true);
+	assert.ok(!html.includes("78vh"), "must not pin the PDF viewer to a fixed 78vh");
+	assert.ok(html.includes('height:100%'), "PDF viewers must fill the frame height");
+});
+
+test("GET /browser/vendor/pdfjs/pdfjs-viewer-element.js serves the asset", async () => {	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-vendor-"));
 	const h = makeHandler(dir);
 	const r = await request(h, "/browser/vendor/pdfjs/pdfjs-viewer-element.js");
 	assert.equal(r.code, 200);
@@ -247,6 +253,39 @@ test("GET diff with embed=1 omits bar and statusbar", async () => {
 
 /* ── client bundle: dock mount flag + layout service ────────────── */
 
+test("GET /browser/api/changed lists files edited this session with status", async () => {
+	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-changed-"));
+	const f = path.join(dir, "a.md");
+	await fs.writeFile(f, "before\n");
+	const nb = path.join(dir, "b.md");
+	await fs.writeFile(nb, "hello\n"); // spill validates the file exists on disk
+	const h = makeHandler(dir);
+	// modified file
+	await request(h, "/browser/api/spill", "POST", { session: "S1", path: "a.md", old: "before\n", new: "after\n", ts: 2 });
+	// new file (no prior version)
+	await request(h, "/browser/api/spill", "POST", { session: "S1", path: "b.md", old: null, new: "hello\n", ts: 1 });
+	// another session stays separate
+	await fs.writeFile(path.join(dir, "z.md"), "x\n");
+	await request(h, "/browser/api/spill", "POST", { session: "S2", path: "z.md", old: null, new: "x", ts: 9 });
+
+	const c = await request(h, "/browser/api/changed?session=S1", "GET");
+	const body = JSON.parse(c.body);
+	assert.equal(c.code, 200);
+	assert.equal(body.session, "S1");
+	const byPath = Object.fromEntries(body.entries.map((e) => [e.path, e.status]));
+	assert.deepEqual(byPath, { "a.md": "modified", "b.md": "added" });
+	// newer-first ordering
+	assert.equal(body.entries[0].path, "a.md");
+	// missing session → 400
+	const noSess = await request(h, "/browser/api/changed", "GET");
+	assert.equal(noSess.code, 400);
+	// other session has its own entry only
+	const z = JSON.parse((await request(h, "/browser/api/changed?session=S2", "GET")).body);
+	assert.deepEqual(z.entries.map((e) => e.path), ["z.md"]);
+});
+
+/* ── client bundle: dock mount flag + layout service ────────────── */
+
 test("client bundle exports isDockMounted and declares layout", () => {
 	const { isDockMounted, inject } = loadClientBundle();
 	assert.equal(typeof isDockMounted, "function");
@@ -351,4 +390,19 @@ test("client bundle breadcrumbParts splits path into clickable segments", () => 
 		{ label: "b", path: "a/b" },
 		{ label: "c.md", path: "a/b/c.md" }
 	]);
+});
+
+test("client bundle stripBase removes the workspace base prefix for breadcrumb display", () => {
+	const { stripBase } = loadClientBundle();
+	const base = "/home/kaynt/Code/dsh-file-pane";
+	// at the workspace root → undefined (breadcrumb shows "workspace")
+	assert.equal(stripBase(base, base), undefined);
+	assert.equal(stripBase(undefined, base), undefined);
+	// nested under base → relative spelling
+	assert.equal(stripBase(base + "/src/app.ts", base), "src/app.ts");
+	assert.equal(stripBase(base + "/a/b/c.md", base), "a/b/c.md");
+	// no base → path unchanged
+	assert.equal(stripBase("src/app.ts", undefined), "src/app.ts");
+	// path outside base → unchanged (fallback)
+	assert.equal(stripBase("/opt/other/x.ts", base), "/opt/other/x.ts");
 });
