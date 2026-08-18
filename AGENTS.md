@@ -33,6 +33,19 @@ Two halves of one cordis plugin (like dsh-better-sidebar-lite):
   only for verify; test changes in a sandbox profile (:3090) first.
 - `web_search` WORKS (has key) — research online is fine.
 
+## Testing rule (IMPORTANT)
+
+- **Always test on a SANDBOX profile, NEVER on production.** Production is the
+  live systemd service `deepseek-harness-web` on port 3080 — never restart it,
+  never install/verify experimental builds against it, and never point dev
+  builds at it.
+- Sandbox loop: build locally → run unit tests (`NODE_OPTIONS= npm test`) →
+  boot a separate sandbox profile on its own port (e.g. :3090) → verify there →
+  only then open a PR. See `HANDOFF-next-session.md` for the sandbox profile
+  recipe.
+- If you must sanity-check the served bundle, verify content/auth on the sandbox
+  port, and compare bundle hashes locally — do not mutate production.
+
 ## Commands (dev loop)
 
 ```sh
