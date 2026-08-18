@@ -23,6 +23,8 @@ export default {
     // git tag, keeps the packed tarball in dist/, and never touches npm. The
     // tarball is then attached to the GitHub Release by the github plugin.
     ["@semantic-release/npm", { npmPublish: false, tarballDir: "dist" }],
-    "@semantic-release/github"
+    // Attach the packed tarball (written to dist/ by the npm plugin) to the
+    // GitHub Release so the plugin can be installed straight from it.
+    ["@semantic-release/github", { assets: ["dist/*.tgz"] }]
   ]
 };
