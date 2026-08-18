@@ -2,4 +2,4 @@ blank_issues_enabled: true
 contact_links:
   - name: GitHub Discussions
     url: https://github.com/trungtaottn/dsh-file-pane/discussions
-    about: Thảo luận chung hoặc hỏi trước khi tạo issue
+    about: general discussion or ask before opening an issue

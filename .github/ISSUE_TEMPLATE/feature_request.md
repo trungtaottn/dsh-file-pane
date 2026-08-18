@@ -1,22 +1,22 @@
 ---
 name: ✨ Feature request
-about: Đề xuất một tính năng hoặc cải tiến cho dsh-file-pane
+about: Suggest a feature or improvement for dsh-file-pane
 title: "[feat] "
 labels: ["enhancement"]
 assignees: ""
 ---
 
-## Vấn đề / động lực
-Bạn đang cố làm gì mà chưa làm được? Vì sao tính năng này cần thiết?
+## Problem / motivation
+What are you trying to do that you can't right now? Why is this feature needed?
 
-## Giải pháp đề xuất
-Mô tả cách thức tính năng nên hoạt động (càng cụ thể càng tốt).
+## Proposed solution
+Describe how the feature should work (the more specific the better).
 
-## Giải pháp thay thế (nếu có)
+## Alternatives considered
 - ...
 
-## Liên quan tới seam/khu vực
-- [ ] Host route `/browser` · [ ] Client-plugin/dock · [ ] Diff/preview · [ ] Build/release · [ ] Docs · [ ] Khác
+## Affected area
+- [ ] Host route `/browser` · [ ] Client plugin / dock · [ ] Diff / preview · [ ] Build / release · [ ] Docs · [ ] Other
 
-## Ghi chú
-<!-- Bất kỳ thông tin thêm nào -->
+## Notes
+<!-- Any additional information -->

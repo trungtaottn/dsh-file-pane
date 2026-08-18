@@ -1,30 +1,29 @@
 ---
 name: 🐞 Bug report
-about: Ghi nhận một bug trong dsh-file-pane
+about: Report a bug in dsh-file-pane
 title: "[bug] "
 labels: ["bug"]
 assignees: ""
 ---
 
-## Mô tả
-Mô tả ngắn gọn vấn đề: chuyện gì xảy ra so với những gì mong đợi.
+## Description
+Short summary of the problem: what happens vs. what you expected.
 
-## Cách tái hiện
-Các bước để tái hiện bug:
-1. Mở `/browser/?path=...`
-2. Bấm ...
-3. Kết quả: ...
+## Steps to reproduce
+1. Open `/browser/?path=...`
+2. Click ...
+3. Result: ...
 
-## Mong đợi
-Điều đúng đắn nên xảy ra.
+## Expected
+What should happen instead.
 
-## Môi trường
-- Kết nối: [ ] loopback / [ ] LAN / [ ] Tailscale / [ ] Cloudflare tunnel / [ ] khác
+## Environment
+- Connection: [ ] loopback / [ ] LAN / [ ] Tailscale / [ ] Cloudflare tunnel / [ ] other
 - Browser: ...
-- DSH version: `@deepseek-ai/dsh@...` (xem `npm view version` nếu cần)
+- DSH version: `@deepseek-ai/dsh@...`
 
-## Log / ảnh chụp
-<!-- Dán log console hoặc đường dẫn màn hình tại đây (tuỳ chọn) -->
+## Logs / screenshots
+<!-- Paste console logs or a screenshot link here (optional) -->
 
-## Ghi chú
-<!-- Bất kỳ thông tin thêm nào -->
+## Notes
+<!-- Any additional information -->

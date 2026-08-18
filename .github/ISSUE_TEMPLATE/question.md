@@ -1,20 +1,20 @@
 ---
 name: ❓ Question / Support
-about: Đặt câu hỏi về cài đặt, sử dụng, hoặc hoạt động của dsh-file-pane
+about: Ask a question about installing, using, or how dsh-file-pane works
 title: "[question] "
 labels: ["question"]
 assignees: ""
 ---
 
-## Câu hỏi
-Diễn đạt rõ câu hỏi của bạn.
+## Question
+State your question clearly.
 
-## Ngữ cảnh
-- Cách dùng (install từ release / shortcut / từng làm gì): ...
-- Môi trường & phiên bản tương ứng: ...
+## Context
+- How you're using it (installed from release / from source / what you did): ...
+- Environment & versions: ...
 
-## Đã thử / đã đọc
-- [ ] README · [ ] AGENTS.md · [ ] Đã tìm trong issues cũ · [ ] Kết quả thử: ...
+## What I've tried / read
+- [ ] README · [ ] AGENTS.md · [ ] Searched existing issues · [ ] What I tried: ...
 
-## Ghi chú
-<!-- Bất kỳ thông tin thêm nào -->
+## Notes
+<!-- Any additional information -->

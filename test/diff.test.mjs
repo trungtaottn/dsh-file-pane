@@ -89,7 +89,7 @@ test("diff without spill renders pane with empty-state note", async () => {
 	const h = makeHandler(dir);
 	const r = await request(h, "/browser/?path=a.md&diff=1&session=NOPE");
 	assert.equal(r.code, 200);
-	assert.ok(r.body.includes("chưa ghi nhận") || r.body.includes("diffempty"), "expected no-spill fallback");
+	assert.ok(r.body.includes("No prior version") || r.body.includes("diffempty"), "expected no-spill fallback");
 });
 
 test("renderMarkdown: headings, code fence, list, table, inline", () => {

@@ -1,34 +1,34 @@
-# Dự án / feature
+# Title / feature
 
-> Ghi tên ngắn gọn (tựa PR) và liên kết issue nếu có: `Closes #<issue>`.
+> Short PR title and linked issue if any: `Closes #<issue>`.
 
-## Mô tả
-Tóm tắt thay đổi & vì sao nó cần thiết.
+## Description
+Summary of the change and why it's needed.
 
-## Loại thay đổi
-- [ ] feat — tính năng mới
-- [ ] fix — sửa bug
-- [ ] chore — vệ sinh/thao tác repo
-- [ ] docs — tài liệu / AGENTS.md
+## Type of change
+- [ ] feat — new feature
+- [ ] fix — bug fix
+- [ ] chore — repo maintenance / tooling
+- [ ] docs — documentation / AGENTS.md
 - [ ] ci — workflow / release
-- [ ] refactor — tái cấu trúc (không đổi hành vi)
+- [ ] refactor — restructure (behavior unchanged)
 
 ## Acceptance criteria
 - [ ] ...
 - [ ] ...
 
-## Testing (bắt buộc — tuân theo AGENTS.md, chỉ test sandbox)
-- [ ] `NODE_OPTIONS= npm test` pass (số test: __)
-- [ ] Verify trên sandbox profile :3090 (không đụng production)
-- [ ] Không tạo lỗi build/lint mới (`NODE_OPTIONS= npm run build`)
+## Testing (required — per AGENTS.md, sandbox only)
+- [ ] `NODE_OPTIONS= npm test` passes (count: __)
+- [ ] Verified on sandbox profile :3090 (production untouched)
+- [ ] No new build/lint errors (`NODE_OPTIONS= npm run build`)
 
 ## Checklist
-- [ ] Đã pull dev mới nhất trước khi bắt đầu
-- [ ] Tuân theo conventional commits
-- [ ] Không thay đổi public contract ngoài ý muốn (route/API/env/schema)
+- [ ] Pulled latest dev before starting
+- [ ] Follows conventional commits
+- [ ] No unintended public-contract change (route/API/env/schema)
 
-## Ảnh chụp / ví dụ (nếu áp dụng)
-<!-- Dán link hoặc mô tả -->
+## Screenshots / examples (if applicable)
+<!-- Paste links or describe -->
 
-## Ghi chú cho reviewer
-<!-- Điểm cần anh đặc biệt chú ý -->
+## Notes for reviewer
+<!-- Points to pay particular attention to -->

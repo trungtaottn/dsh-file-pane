@@ -80,7 +80,7 @@ Paths may be workspace-relative **or** absolute-under-root
 absolute path inside its configured root, so file chips opened from sessions
 whose cwd is a subdirectory resolve to the right file.
 
-## Version diff (trước → sau)
+## Version diff (before → after)
 
 When an agent edits a file, the client-plugin spills the edit's **before/after**
 to the host (RAM only, keyed by the currently open session) and the pane renders
