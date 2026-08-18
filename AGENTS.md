@@ -93,6 +93,11 @@ release.config.mjs   semantic-release, GitHub-only (npmPublish:false)
   latest dev before opening the PR.
 - Conventional commits (`feat:`, `fix:`, `chore:`, `ci:`, `docs:`); `feat`/`fix`
   on main trigger a release.
+- **NEVER merge a PR yourself. NEVER push directly to `dev` or `main`.**
+  Only the repo owner merges, or an agent may merge strictly after the owner
+  explicitly asked it to. Opening a PR is fine (and expected) — merging is not.
+  Post the PR URL and wait. This rule also covers admin/`gh pr merge` calls:
+  do not self-approve or self-merge a PR you opened.
 - **Release = GitHub-only** (no npm): `release.config.mjs` uses
   `["@semantic-release/npm", { npmPublish:false, tarballDir:"dist" }]` +
   `["@semantic-release/github", { assets:["dist/*.tgz"] }]`. Pushing `feat`/`fix`
