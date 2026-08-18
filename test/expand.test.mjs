@@ -272,3 +272,30 @@ test("client bundle dock locale includes navigation keys", () => {
 	assert.ok(inject.includes("layout"));
 	assert.equal(typeof apply, "function");
 });
+
+test("client bundle dockSrc builds session/diff/embed query", () => {
+	const { dockSrc } = loadClientBundle();
+	// plain view of a text file
+	const view = dockSrc("src/app.ts");
+	assert.equal(view, "/browser/?path=src%2Fapp.ts&embed=1");
+	// diff of a text file carries session
+	const diff = dockSrc("src/app.ts", { diff: true, session: "S1" });
+	assert.equal(diff, "/browser/?path=src%2Fapp.ts&diff=1&session=S1&embed=1");
+	// diff of a binary/non-text path does NOT add diff (route would 415)
+	const bin = dockSrc("img/logo.png", { diff: true, session: "S1" });
+	assert.ok(!bin.includes("diff=1"), "non-text path must not request diff");
+	assert.equal(bin, "/browser/?path=img%2Flogo.png&embed=1");
+	// root listing
+	const root = dockSrc(undefined);
+	assert.equal(root, "/browser/?path=&embed=1");
+});
+
+test("client bundle upPath computes parent directories", () => {
+	const { upPath } = loadClientBundle();
+	assert.equal(upPath("a/b/c.md"), "a/b");
+	assert.equal(upPath("a/b"), "a");
+	assert.equal(upPath("a.md"), undefined); // top-level file → root
+	assert.equal(upPath("a"), undefined);
+	assert.equal(upPath(undefined), undefined);
+	assert.equal(upPath(""), undefined);
+});

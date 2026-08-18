@@ -4,3 +4,5 @@ node_modules/
 dist/
 # local session handoff — never commit (see HANDOFF-next-session.md)
 HANDOFF-next-session.md
+# internal research/design reports — never commit (local-only)
+plans/
