@@ -112,8 +112,8 @@ test("GET ?path=<broken>.docx falls back to 200 HTML (no crash)", async () => {
 	assert.match(r.type, /html/);
 });
 
-test("paneFileHTML PDF render fills the frame (no fixed 78vh)", () => {
-	const html = paneFileHTML({ path: "dir/a.pdf", name: "a.pdf", kind: "pdf", mime: "application/pdf", size: 42 }, true);
+test("paneFileHTML PDF render fills the frame (no fixed 78vh)", async () => {
+	const html = await paneFileHTML({ path: "dir/a.pdf", name: "a.pdf", kind: "pdf", mime: "application/pdf", size: 42 }, true);
 	assert.ok(!html.includes("78vh"), "must not pin the PDF viewer to a fixed 78vh");
 	assert.ok(html.includes('height:100%'), "PDF viewers must fill the frame height");
 });

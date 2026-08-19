@@ -23,3 +23,13 @@
         searchMode: content
         searchGlobs: ""
         searchMax: 200
+        # Syntax-highlight / large-file settings (host-side; the browser bundle
+        # is untouched). Missing keys fall back to these defaults.
+        #   enabledLangs: Shiki grammars to load (subset of the pinned set).
+        #   followEnvTheme: follow DSH light/dark for token colors (default true).
+        #   windowingThreshold: lines at/beyond which data-large engages (100k).
+        #   windowLines: default ?lines= window size.
+        enabledLangs: [] # empty → the pinned 13-language default set
+        followEnvTheme: true
+        windowingThreshold: 100000
+        windowLines: 1000
