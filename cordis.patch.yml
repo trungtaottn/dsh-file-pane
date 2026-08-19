@@ -33,3 +33,9 @@
         followEnvTheme: true
         windowingThreshold: 100000
         windowLines: 1000
+        # Gated git write (per-feature settings): local `git commit` is OFF by
+        # default — no commit UI, no reachable write route until the operator
+        # sets gitWriteEnabled: true. historyDepth tunes the commit-history
+        # list (clamped 1..500 server-side).
+        gitWriteEnabled: false
+        historyDepth: 100
