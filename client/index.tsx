@@ -29,6 +29,7 @@ import * as React from "react";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createThemeController, resolveInitialPreset } from "./theme-controller";
 import { presetIds } from "./theme-presets";
+import { splitHighlight } from "./search-text";
 
 const LOADER_ID = "dsh-file-pane";
 export const name = LOADER_ID;
@@ -406,6 +407,148 @@ function Breadcrumb({ path, onNavigate }) {
   );
 }
 
+/* ── Workspace search (dock Search section, via GET /browser/api/search NDJSON). ── */
+
+/** Client-side row cap (belt-and-suspenders; server clamps max too). */
+const SEARCH_ROW_CAP = 200;
+
+/** Debounce delay for the search box. */
+const SEARCH_DEBOUNCE_MS = 250;
+
+/**
+ * Read an NDJSON response body incrementally, calling `onRecord` per parsed
+ * line. Handles partial lines across chunk boundaries by buffering and splitting
+ * on `\n`; malformed lines are skipped (never fatal).
+ */
+export async function readNdjson(body, onRecord) {
+  if (!body) return;
+  const reader = body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value ?? new Uint8Array(0), { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        try { onRecord(JSON.parse(line)); } catch { /* malformed line: ignore */ }
+      }
+    }
+    if (buf.trim()) { try { onRecord(JSON.parse(buf.trim())); } catch { /* ignore */ } }
+  } catch { /* aborted/network */ }
+}
+
+/**
+ * Fetch a workspace search as NDJSON. Resolves once the stream is consumed.
+ * Returns null on network/HTTP error (caller surfaces an inline message).
+ */
+export async function fetchSearch(ws, opts) {
+  const p = new URLSearchParams();
+  p.set("q", opts.q);
+  p.set("workspace", ws);
+  p.set("mode", opts.mode);
+  p.set("max", String(opts.max ?? SEARCH_ROW_CAP));
+  if (opts.case) p.set("case", opts.case);
+  if (opts.globs) p.set("globs", opts.globs);
+  try {
+    const res = await fetch("/browser/api/search?" + p.toString(), { signal: opts.signal });
+    if (!res.ok || !res.body) return null;
+    await readNdjson(res.body, opts.onRecord);
+    return true;
+  } catch {
+    if (opts.signal?.aborted) return null;
+    return null;
+  }
+}
+
+/** The dock Search panel: Name/Content toggle, debounced query, NDJSON results. */
+function SearchSection({ ws, t, onOpen }) {
+  const [q, setQ] = useState("");
+  const [debounced, setDebounced] = useState("");
+  const [mode, setMode] = useState("content");
+  const [rows, setRows] = useState([]);
+  const [truncated, setTruncated] = useState(false);
+  const [err, setErr] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [count, setCount] = useState(0);
+  const abortRef = useRef(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    const t2 = setTimeout(() => setDebounced(q.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t2);
+  }, [q]);
+
+  useEffect(() => {
+    abortRef.current?.abort(); // cancel any in-flight search before starting a new one
+    if (!debounced) { setRows([]); setCount(0); setTruncated(false); setErr(null); setLoading(false); return; }
+    const ac = new AbortController();
+    abortRef.current = ac;
+    const seq = ++seqRef.current;
+    setErr(null); setLoading(true); setRows([]); setCount(0); setTruncated(false);
+    const pending = [];
+    fetchSearch(ws, {
+      q: debounced,
+      mode,
+      max: SEARCH_ROW_CAP,
+      signal: ac.signal,
+      onRecord: (rec) => {
+        if (seq !== seqRef.current) return;
+        if (rec.t === "match") {
+          const key = rec.path + ":" + rec.line + ":" + (rec.col ?? 0);
+          if (pending.length >= SEARCH_ROW_CAP) { setTruncated(true); ac.abort(); return; }
+          if (!pending.some((r2) => r2.key === key)) { pending.push({ ...rec, key }); setCount((c) => c + 1); }
+        } else if (rec.t === "done") {
+          setTruncated(!!rec.truncated);
+        } else if (rec.t === "error") {
+          setErr(rec.message || "search error");
+        }
+      }
+    }).finally(() => {
+      if (seq === seqRef.current) { setLoading(false); setRows(pending.slice(0, SEARCH_ROW_CAP)); }
+    });
+    return () => { ac.abort(); };
+  }, [debounced, mode, ws]);
+
+  return (
+    <div className="dshfp-search" data-dsh-file-pane-search="1">
+      <div className="dshfp-search-bar">
+        <input
+          type="text"
+          value={q}
+          placeholder="Search workspace…"
+          aria-label="Search workspace"
+          onChange={(e) => setQ(e.target.value)}
+        />
+        <div className="dshfp-search-mode">
+          <button type="button" className={mode === "name" ? "on" : ""} onClick={() => setMode("name")}>Name</button>
+          <button type="button" className={mode === "content" ? "on" : ""} onClick={() => setMode("content")}>Content</button>
+        </div>
+      </div>
+      {loading ? <div className="dshfp-search-status">searching…</div> : null}
+      {err ? <div className="dshfp-search-status dshfp-search-err">{err}</div> : null}
+      {!loading && !err && rows.length === 0 && debounced
+        ? <div className="dshfp-search-status">no matches</div>
+        : null}
+      {count > 0 ? <div className="dshfp-search-meta">{count} match{count === 1 ? "" : "es"}{truncated ? ` · showing first ${SEARCH_ROW_CAP}` : ""}</div> : null}
+      <div className="dshfp-search-results">
+        {rows.map((r) => (
+          <button type="button" key={r.key} className="dshfp-sr" onClick={() => onOpen(r)}>
+            <span className="dshfp-sr-path">{r.path}{r.line && mode === "content" ? <em>:{r.line}</em> : null}</span>
+            {mode === "content" && r.text
+              ? <span className="dshfp-sr-snippet" dangerouslySetInnerHTML={{ __html: splitHighlight(r.text, r.pre ?? "", r.post ?? "") }} />
+              : null}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /**
  * DockRoot: the frame's right `details` column occupant (in-flow). The DSH
  * AppFrame reserves this column beside the conversation, so the conversation
@@ -449,6 +592,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const [hoverAct, setHoverAct] = useState(null); // which activity the popup follows while hovering the rail (null=follow current view)
   const [stamp, setStamp] = useState(0);
   const [changeView, setChangeView] = useState(false); // sidebar shows Changes (VSCode Source-Control style) vs the file tree
+  const [searchView, setSearchView] = useState(false); // sidebar shows the Search section instead of tree/changes
   const [changed, setChanged] = useState([]);
   const [git, setGit] = useState({ git: false, current: null, branches: [] }); // branch state for the status bar
   const [branchOpen, setBranchOpen] = useState(false); // branch switcher dropdown
@@ -576,6 +720,17 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const onAct = (v) => {
     if (showTree && changeView === v) setShowTree(false);
     else { setChangeView(v); setShowTree(true); }
+    setSearchView(false);
+  };
+  // Search activity: clicking it collapses if already open, else shows Search.
+  const onActSearch = () => {
+    if (showTree && searchView) setShowTree(false);
+    else { setChangeView(false); setSearchView(true); setShowTree(true); }
+  };
+  // Open a search result in the pane (result.path is workspace-relative).
+  const openSearchResult = (r) => {
+    const p = typeof r?.path === "string" ? r.path : "";
+    openFile(base && p ? base + "/" + p.replace(/^\/+/, "") : p);
   };
   // Switch branch via the server, then refresh branch + dirty set + the iframe.
   const doCheckout = async (b) => {
@@ -669,6 +824,26 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-status-sp{flex:1}
         .dshfp-status-changes{max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-state-warn-primary,#f0b386)}
         .dshfp-git-err{flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-state-danger-primary,#ff6b6b)}
+        .dshfp-search{display:flex;flex-direction:column;gap:0;min-height:0}
+        .dshfp-search-panel{width:230px;flex:none;border-right:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12))}
+        .dshfp-search-head{padding:5px 8px 3px;font-family:var(--dsw-alias-font-sans,ui-monospace,Menlo,Consolas,monospace);font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--dsw-alias-label-tertiary,#9aa3b5);flex:none}
+        .dshfp-search-bar{display:flex;align-items:center;gap:6px;padding:4px 6px;flex:none}
+        .dshfp-search-bar input{flex:1;min-width:0;background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06));border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));color:var(--dsw-alias-label-primary,#eef1f8);border-radius:5px;padding:3px 6px;font:inherit;font-size:12px}
+        .dshfp-search-bar input:focus{outline:none;border-color:var(--dsw-alias-state-business-primary,#5b96ff)}
+        .dshfp-search-mode{display:flex;gap:2px;flex:none}
+        .dshfp-search-mode button{background:none;border:0;color:var(--dsw-alias-label-tertiary,#9aa3b5);cursor:pointer;font:inherit;font-size:11px;padding:2px 6px;border-radius:4px}
+        .dshfp-search-mode button:hover{color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-search-mode button.on{color:var(--dsw-alias-state-business-primary,#5b96ff);background:rgba(91,150,255,.12)}
+        .dshfp-search-status{color:var(--dsw-alias-label-tertiary,#9aa3b5);font-size:11px;padding:0 8px;flex:none}
+        .dshfp-search-status.dshfp-search-err{color:var(--dsw-alias-state-danger-primary,#ff6b6b)}
+        .dshfp-search-meta{color:var(--dsw-alias-label-tertiary,#9aa3b5);font-size:10px;padding:2px 8px;flex:none}
+        .dshfp-search-results{flex:1;min-height:0;overflow:auto;padding:2px 4px}
+        .dshfp-sr{display:block;width:100%;text-align:left;background:none;border:0;cursor:pointer;padding:3px 6px;border-radius:4px;color:var(--dsw-alias-label-secondary,#c7ccd9);font:inherit;font-size:12px;line-height:1.45}
+        .dshfp-sr:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-sr-path{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .dshfp-sr-path em{font-style:normal;color:var(--dsw-alias-label-tertiary,#9aa3b5);margin-left:2px}
+        .dshfp-sr-snippet{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary,#9aa3b5);font-size:11px}
+        .dshfp-sr-snippet mark{background:rgba(232,179,65,.28);color:var(--dsw-alias-state-warn-primary,#f0b386);border-radius:2px;padding:0 1px}
       `}</style>
       <div className="dshfp-dock-head">
         <button type="button" title={t?.("dock.home") ?? "Files root"} onClick={() => { navDir(base); }}>
@@ -703,6 +878,9 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
             <button type="button" className="dshfp-act" onMouseEnter={() => { setHoverAct(true); if (!showTree) setTreeHover(true); }} data-on={changeView || undefined} title={t?.("dock.git") ?? "Git / Changes"} onClick={() => onAct(true)}>
               <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h4M4 8h4M4 12h4"/><path d="M12 3.5v9"/><path d="M10.5 5.5 12 4l1.5 1.5M10.5 10.5 12 12l1.5-1.5"/></svg>
             </button>
+            <button type="button" className="dshfp-act" onMouseEnter={() => { setHoverAct(false); if (!showTree) setTreeHover(true); }} data-on={searchView || undefined} title={t?.("dock.search") ?? "Search"} onClick={onActSearch}>
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>
+            </button>
             <span className="dshfp-sp" />
             <button type="button" className="dshfp-act" title={showTree ? (t?.("dock.collapseTree") ?? "Collapse") : (t?.("dock.revealTree") ?? "Show")} onClick={() => setShowTree((v) => !v)}>
               {showTree
@@ -712,7 +890,12 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
           </div>
           {showTree ? (
             <div className="dshfp-panel">
-              {changeView ? (
+              {searchView ? (
+                <div className="dshfp-dock-tree dshfp-search" aria-label={t?.("dock.search") ?? "Search"}>
+                  <div className="dshfp-search-head">{t?.("dock.search") ?? "Search"}</div>
+                  <SearchSection ws={base} t={t} onOpen={openSearchResult} />
+                </div>
+              ) : changeView ? (
                 <div className="dshfp-dock-tree dshfp-changes" aria-label={t?.("dock.changes") ?? "Changes"}>
                   <div className="dshfp-changes-head">{t?.("dock.changesHead") ?? "Changes"}</div>
                   {changed.length === 0
@@ -731,20 +914,29 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
               )}
             </div>
           ) : (
-            treeHover ? (
-              <nav className="dshfp-dock-tree dshfp-tree-pop" aria-label={t?.("dock.tree") ?? "File tree"} onMouseEnter={() => setTreeHover(true)} onMouseLeave={() => setTreeHover(false)}>
-                {(hoverAct ?? changeView)
-                  ? changed.length === 0
-                    ? <div className="dshfp-tree-empty">( working tree clean )</div>
-                    : changed.map((c) => (
-                      <button type="button" key={c.path} className="dshfp-changed-item" onClick={() => { setPath(c.path); setDiff(true); setShowTree(false); const sid = effSession; if (sid) { setSession(sid); persistDockState({ path: c.path, session: sid }); } }}>
-                        <span className="dshfp-changed-dot" data-status={c.status}>{c.status === "?" ? "?" : (c.status || "M")[0]}</span>
-                        <span className="nm">{c.path}</span>
-                      </button>
-                    ))
-                  : <FileTree path={base} workspace={base} onOpen={openFile} activePath={viewPath} />}
-              </nav>
-            ) : null
+            searchView ? (
+              <div className="dshfp-panel dshfp-search-panel">
+                <div className="dshfp-dock-tree dshfp-search" aria-label={t?.("dock.search") ?? "Search"}>
+                  <div className="dshfp-search-head">{t?.("dock.search") ?? "Search"}</div>
+                  <SearchSection ws={base} t={t} onOpen={openSearchResult} />
+                </div>
+              </div>
+            ) : (
+              treeHover ? (
+                <nav className="dshfp-dock-tree dshfp-tree-pop" aria-label={t?.("dock.tree") ?? "File tree"} onMouseEnter={() => setTreeHover(true)} onMouseLeave={() => setTreeHover(false)}>
+                  {(hoverAct ?? changeView)
+                    ? changed.length === 0
+                      ? <div className="dshfp-tree-empty">( working tree clean )</div>
+                      : changed.map((c) => (
+                        <button type="button" key={c.path} className="dshfp-changed-item" onClick={() => { setPath(c.path); setDiff(true); setShowTree(false); const sid = effSession; if (sid) { setSession(sid); persistDockState({ path: c.path, session: sid }); } }}>
+                          <span className="dshfp-changed-dot" data-status={c.status}>{c.status === "?" ? "?" : (c.status || "M")[0]}</span>
+                          <span className="nm">{c.path}</span>
+                        </button>
+                      ))
+                    : <FileTree path={base} workspace={base} onOpen={openFile} activePath={viewPath} />}
+                </nav>
+              ) : null
+            )
           )}
         </div>
         <iframe key={path + ":" + diff + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
@@ -885,8 +1077,8 @@ function apply(ctx) {
   };
   const resolvePath = (rel) => resolvePanePath(getCwd(), rel);
   ctx.effect(() => ctx.locale.register(NS, {
-    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.tree": "File tree", "dock.files": "Files", "dock.git": "Git / Changes", "dock.changes": "Changes", "dock.changesHead": "Changes", "dock.branch": "Git branch", "dock.revealTree": "Show file tree", "dock.collapseTree": "Collapse file tree", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first.", "dock.theme": "Theme", "dock.themeDefault": "DSH default" },
-    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.tree": "文件树", "dock.files": "文件", "dock.git": "Git / 更改", "dock.changes": "更改", "dock.changesHead": "更改", "dock.branch": "Git 分支", "dock.revealTree": "显示文件树", "dock.collapseTree": "折叠文件树", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件", "dock.theme": "主题", "dock.themeDefault": "默认" }
+    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.tree": "File tree", "dock.files": "Files", "dock.git": "Git / Changes", "dock.changes": "Changes", "dock.changesHead": "Changes", "dock.branch": "Git branch", "dock.revealTree": "Show file tree", "dock.collapseTree": "Collapse file tree", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first.", "dock.theme": "Theme", "dock.themeDefault": "DSH default", "dock.search": "Search" },
+    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.tree": "文件树", "dock.files": "文件", "dock.git": "Git / 更改", "dock.changes": "更改", "dock.changesHead": "更改", "dock.branch": "Git 分支", "dock.revealTree": "显示文件树", "dock.collapseTree": "折叠文件树", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件", "dock.theme": "主题", "dock.themeDefault": "默认", "dock.search": "搜索" }
   }), "dsh-file-pane: dictionaries");
   // Passive diff spill: agent edit before/after -> host RAM (per open session).
   ctx.conversationEvents.register(makeDiffSpillDefinition(getSession));

@@ -21,7 +21,8 @@ async function main() {
   await build({
     entryPoints: [
       join(ROOT, "client", "theme-presets.ts"),
-      join(ROOT, "client", "theme-controller.ts")
+      join(ROOT, "client", "theme-controller.ts"),
+      join(ROOT, "client", "search-text.ts")
     ],
     outdir: OUT_DIR,
     bundle: true,

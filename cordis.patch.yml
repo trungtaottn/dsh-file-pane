@@ -17,3 +17,9 @@
         # dsh-default | deepseek-blue | nord | codex-warm. A user's
         # localStorage choice (dsh.filePane.theme) overrides this at runtime.
         themePreset: dsh-default
+        # Workspace search defaults (per-feature settings). The host is
+        # authoritative: searchMode is enum-clamped (content|name), searchGlobs
+        # is SAFE_GLOB_RE-allowlisted server-side, searchMax is clamped to 1000.
+        searchMode: content
+        searchGlobs: ""
+        searchMax: 200

@@ -83,6 +83,7 @@
     "semantic-release": "^25.0.9"
   },
   "dependencies": {
+    "@vscode/ripgrep": "^1.18.0",
     "mammoth": "^1.12.1",
     "pdfjs-viewer-element": "^3.2.2"
   }
