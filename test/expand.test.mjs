@@ -12,7 +12,7 @@ import { apply as applyHost } from "../lib/index.js";
 
 function makeHandler(root, config = {}) {
 	let reg;
-	const ctx = { webServer: { register: (x) => (reg = x) }, logger: { info() {} } };
+	const ctx = { webServer: { register: (x) => (reg = x), registerUpgrade: () => () => {} }, logger: { info() {} }, effect: (cb) => { const d = typeof cb === "function" ? cb() : undefined; if (typeof d === "function") { try { d(); } catch {} } return () => {}; } };
 	applyHost(ctx, { workspaceRoot: root, ...config });
 	return reg.handler;
 }
@@ -112,8 +112,8 @@ test("GET ?path=<broken>.docx falls back to 200 HTML (no crash)", async () => {
 	assert.match(r.type, /html/);
 });
 
-test("paneFileHTML PDF render fills the frame (no fixed 78vh)", () => {
-	const html = paneFileHTML({ path: "dir/a.pdf", name: "a.pdf", kind: "pdf", mime: "application/pdf", size: 42 }, true);
+test("paneFileHTML PDF render fills the frame (no fixed 78vh)", async () => {
+	const html = await paneFileHTML({ path: "dir/a.pdf", name: "a.pdf", kind: "pdf", mime: "application/pdf", size: 42 }, true);
 	assert.ok(!html.includes("78vh"), "must not pin the PDF viewer to a fixed 78vh");
 	assert.ok(html.includes('height:100%'), "PDF viewers must fill the frame height");
 });
@@ -166,10 +166,10 @@ function loadClientBundle() {
 
 test("resolvePanePath joins cwd + relative deliverable (built-in resolveWorkspacePath semantics)", () => {
 	const { resolvePanePath } = loadClientBundle();
-	assert.equal(resolvePanePath("/home/kaynt/Code/dsh-file-pane", "src/app.ts"), "/home/kaynt/Code/dsh-file-pane/src/app.ts");
-	assert.equal(resolvePanePath("/home/kaynt", "a/b.md"), "/home/kaynt/a/b.md");
+	assert.equal(resolvePanePath("/home/user/Code/dsh-file-pane", "src/app.ts"), "/home/user/Code/dsh-file-pane/src/app.ts");
+	assert.equal(resolvePanePath("/home/user", "a/b.md"), "/home/user/a/b.md");
 	// absolute deliverable passes through untouched
-	assert.equal(resolvePanePath("/home/kaynt", "/tmp/x.txt"), "/tmp/x.txt");
+	assert.equal(resolvePanePath("/home/user", "/tmp/x.txt"), "/tmp/x.txt");
 	// no cwd → raw relative path (legacy behavior)
 	assert.equal(resolvePanePath(undefined, "docs/README.md"), "docs/README.md");
 	// blank cwd → raw relative path
@@ -189,7 +189,7 @@ test("readFileResult classifies .docx as kind docx", async () => {
 
 test("apply falls back to process.env.HOME when no workspaceRoot config is given", async () => {
 	let captured;
-	const ctx = { webServer: { register: (x) => (captured = x) }, logger: { info() {} } };
+	const ctx = { webServer: { register: (x) => (captured = x), registerUpgrade: () => () => {} }, logger: { info() {} }, effect: (cb) => { const d = typeof cb === "function" ? cb() : undefined; if (typeof d === "function") { try { d(); } catch {} } return () => {}; } };
 	applyHost(ctx, {});
 	assert.ok(captured, "route registered");
 	// The handler must resolve files under $HOME (the default root).
@@ -204,7 +204,7 @@ test("apply uses config.workspaceRoot over process.env.HOME", async () => {
 	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-cfg-"));
 	await fs.writeFile(path.join(dir, "x.md"), "cfg-root");
 	let captured;
-	const ctx = { webServer: { register: (x) => (captured = x) }, logger: { info() {} } };
+	const ctx = { webServer: { register: (x) => (captured = x), registerUpgrade: () => () => {} }, logger: { info() {} }, effect: (cb) => { const d = typeof cb === "function" ? cb() : undefined; if (typeof d === "function") { try { d(); } catch {} } return () => {}; } };
 	applyHost(ctx, { workspaceRoot: dir });
 	const r = await request(captured.handler, "/browser/?path=x.md");
 	assert.equal(r.code, 200);
@@ -394,7 +394,7 @@ test("client bundle breadcrumbParts splits path into clickable segments", () => 
 
 test("client bundle stripBase removes the workspace base prefix for breadcrumb display", () => {
 	const { stripBase } = loadClientBundle();
-	const base = "/home/kaynt/Code/dsh-file-pane";
+	const base = "/home/user/Code/dsh-file-pane";
 	// at the workspace root → undefined (breadcrumb shows "workspace")
 	assert.equal(stripBase(base, base), undefined);
 	assert.equal(stripBase(undefined, base), undefined);

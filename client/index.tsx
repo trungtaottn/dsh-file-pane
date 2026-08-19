@@ -27,6 +27,9 @@
 // Bundled platform constants (no cross-plugin value imports; kept local).
 import * as React from "react";
 import { useState, useEffect, useRef, useCallback } from "react";
+import { createThemeController, resolveInitialPreset } from "./theme-controller";
+import { presetIds } from "./theme-presets";
+import { splitHighlight } from "./search-text";
 
 const LOADER_ID = "dsh-file-pane";
 export const name = LOADER_ID;
@@ -36,6 +39,8 @@ const NS = "dsh-file-pane";
 const DOCK_OPEN_EVENT = "dsh-file-pane:open";
 /** Persisted dock open/closed preference key. */
 const DOCK_STORAGE_KEY = "dsh.filePane.dock";
+/** Persisted theme preset choice key (survives reload; mirrors DOCK_STORAGE_KEY). */
+const THEME_STORAGE_KEY = "dsh.filePane.theme";
 /** Live mount flag: set by the dock while it is mounted (session-scoped). */
 let dockMounted = false;
 function isDockMounted() { return dockMounted; }
@@ -51,7 +56,7 @@ function isDockMounted() { return dockMounted; }
  * it makes `ctx.layout` undefined and the dock silently abdicates, so apply
  * throws loudly instead (same discipline as dsh-better-sidebar-lite).
  */
-export const inject = ["slots", "locale", "connection", "conversationEvents", "sessions", "layout"];
+export const inject = ["slots", "locale", "connection", "conversationEvents", "sessions", "layout", "theme"];
 
 /** Trailing segment of a slash-or-backslash path. */
 function basename(p) {
@@ -283,23 +288,112 @@ function persistDockState(state) {
 }
 
 /** Fetch a directory listing as JSON (same origin). Returns entries or null. */
-async function fetchListing(path) {
+async function fetchListing(path, workspace) {
   try {
-    const res = await fetch("/browser/?path=" + encodeURIComponent(path ?? "") + "&json=1");
+    const res = await fetch("/browser/?path=" + encodeURIComponent(path ?? "") + "&json=1" + (workspace ? "&workspace=" + encodeURIComponent(workspace) : ""));
     if (!res.ok) return null;
     const data = await res.json();
     return Array.isArray(data?.entries) ? data.entries : null;
   } catch { return null; }
 }
 
-/** Fetch the list of files changed in a session (host spill lens). */
-async function fetchChanged(session) {
-  if (!session) return null;
+/**
+ * Live-watch dirty-signal router (Phase 5). Given a `{type:"dirty", events}`
+ * batch, decides WHICH existing HTTP refetch to run — targeted, never a
+ * full-tree rescan:
+ *   - a dirty rel at/under the current view root → subtree re-list (stamp bump);
+ *   - any add/change/unlink kind → git-status refresh (dirty set changed);
+ *   - the open file's rel dirty → iframe reload via setStamp.
+ * Returns a promise resolving when the chosen refreshes settled. Pure / no
+ * React state — exported so the client-contract tests can stub the fetchers.
+ */
+export async function refreshDirty(batch, { workspace, viewPath, base, fetchListingFn, fetchGitStatusFn, setStamp, onGitStatus }) {
+  const events = Array.isArray(batch?.events) ? batch.events : [];
+  if (events.length === 0) return;
+  const rels = events.map((e) => e?.rel).filter((r) => typeof r === "string" && r.length > 0);
+  const touch = (parent) => {
+    if (!parent) return false;
+    const p = String(parent);
+    return rels.some((r) => r === p || r.startsWith(p + "/"));
+  };
+  const fetchList = fetchListingFn ?? fetchListing;
+  const fetchGit = fetchGitStatusFn ?? fetchGitStatus;
+  const viewRel = stripBase(viewPath, base); // workspace-relative spelling
+  let reloadIframe = false;
+  if (viewRel) reloadIframe = touch(viewRel);
+  if (touch(viewRel || "")) {
+    // subtree re-list: bump stamp (drives FileTree re-fetch + iframe)
+    if (setStamp) setStamp((s) => s + 1);
+    await fetchList(viewPath ?? base, base);
+  }
+  if (events.some((e) => e?.kind === "add" || e?.kind === "change" || e?.kind === "unlink")) {
+    const d = await fetchGit(workspace);
+    if (d && typeof onGitStatus === "function") onGitStatus(d);
+  }
+  if (reloadIframe && setStamp) setStamp((s) => s + 1);
+}
+
+/** Fetch the current branch + local branch list for a workspace. Returns null on error. */
+async function fetchGitBranch(workspace) {
+  if (!workspace) return null;
   try {
-    const res = await fetch("/browser/api/changed?session=" + encodeURIComponent(session));
+    const res = await fetch("/browser/api/git/branch?workspace=" + encodeURIComponent(workspace));
     if (!res.ok) return null;
-    const data = await res.json();
-    return Array.isArray(data?.entries) ? data.entries : null;
+    return await res.json();
+  } catch { return null; }
+}
+
+/** Fetch the git dirty-file set for a workspace. Returns null on error. */
+async function fetchGitStatus(workspace) {
+  if (!workspace) return null;
+  try {
+    const res = await fetch("/browser/api/git/status?workspace=" + encodeURIComponent(workspace));
+    if (!res.ok) return null;
+    const d = await res.json();
+    return Array.isArray(d?.changes) ? d : null;
+  } catch { return null; }
+}
+
+/** Switch the workspace to a branch (POST). Returns { ok, error?, current } or null. */
+async function checkoutGitBranch(workspace, branch) {
+  if (!workspace || !branch) return null;
+  try {
+    const res = await fetch("/browser/api/git/checkout?workspace=" + encodeURIComponent(workspace) + "&branch=" + encodeURIComponent(branch), { method: "POST" });
+    return await res.json().catch(() => null);
+  } catch { return null; }
+}
+
+/** Fetch the commit history (oneline list) for a workspace. Returns [] on error. */
+async function fetchGitLog(workspace, limit = 100) {
+  if (!workspace) return [];
+  try {
+    const res = await fetch("/browser/api/git/log?workspace=" + encodeURIComponent(workspace) + "&limit=" + limit);
+    if (!res.ok) return [];
+    const d = await res.json();
+    return Array.isArray(d?.entries) ? d.entries : [];
+  } catch { return []; }
+}
+
+/** Fetch per-line blame for a file. Returns { capped, entries } or null. */
+async function fetchGitBlame(workspace, path) {
+  if (!workspace || !path) return null;
+  try {
+    const res = await fetch("/browser/api/git/blame?workspace=" + encodeURIComponent(workspace) + "&path=" + encodeURIComponent(path));
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+/** Post a local commit (gated server-side). Returns { ok, error? } or null. */
+async function commitGit(workspace, message) {
+  if (!workspace || !message) return null;
+  try {
+    const res = await fetch("/browser/api/git/commit?workspace=" + encodeURIComponent(workspace), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message })
+    });
+    return await res.json().catch(() => null);
   } catch { return null; }
 }
 
@@ -308,7 +402,7 @@ async function fetchChanged(session) {
  * clicking a directory fetch+expands its children; clicking a file loads it
  * in the iframe. Sorted dirs-first, matching the pane listing.
  */
-function FileTree({ path, onOpen, activePath, depth = 0 }) {
+function FileTree({ path, onOpen, activePath, depth = 0, workspace }) {
   const [rows, setRows] = useState(null); // null = loading, [] = loaded
   const [open, setOpen] = useState(depth === 0); // root auto-expanded
   const [err, setErr] = useState(false);
@@ -317,14 +411,14 @@ function FileTree({ path, onOpen, activePath, depth = 0 }) {
     if (!open) return;
     let cancelled = false;
     setErr(false); setRows(null);
-    fetchListing(path).then((entries) => {
+    fetchListing(path, workspace).then((entries) => {
       if (cancelled) return;
       if (entries === null) { setErr(true); setRows([]); return; }
       const sorted = [...entries].sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name));
       setRows(sorted);
     }).catch(() => { if (!cancelled) { setErr(true); setRows([]); } });
     return () => { cancelled = true; };
-  }, [open, path]);
+  }, [open, path, workspace]);
 
   const toggle = (e) => { e.stopPropagation(); setOpen((o) => !o); };
 
@@ -333,7 +427,7 @@ function FileTree({ path, onOpen, activePath, depth = 0 }) {
       <li className="dshfp-tree-row">
         <button className="dshfp-tree-node" type="button" onClick={toggle} data-dir="1">
           <span className="chev">{open ? "⌄" : "›"}</span>
-          <span className="nm">{depth === 0 ? "workspace" : basename(path)}</span>
+          <span className="nm">{path ? basename(path) : "workspace"}</span>
         </button>
         {open ? (
           <ul className="dshfp-tree-c">
@@ -341,7 +435,7 @@ function FileTree({ path, onOpen, activePath, depth = 0 }) {
             {rows === null && !err ? <li className="dshfp-tree-empty">( loading… )</li> : null}
             {(rows ?? []).map((e) => {
               const childPath = path ? path + "/" + e.name : e.name;
-              if (e.dir) return <FileTree key={childPath} path={childPath} onOpen={onOpen} activePath={activePath} depth={depth + 1} />;
+              if (e.dir) return <FileTree key={childPath} path={childPath} onOpen={onOpen} activePath={activePath} depth={depth + 1} workspace={workspace} />;
               return (
                 <li key={childPath} className="dshfp-tree-row">
                   <button className="dshfp-tree-node" type="button" data-file="1" data-active={childPath === activePath || undefined} onClick={() => onOpen(childPath)}>
@@ -383,6 +477,148 @@ function Breadcrumb({ path, onNavigate }) {
   );
 }
 
+/* ── Workspace search (dock Search section, via GET /browser/api/search NDJSON). ── */
+
+/** Client-side row cap (belt-and-suspenders; server clamps max too). */
+const SEARCH_ROW_CAP = 200;
+
+/** Debounce delay for the search box. */
+const SEARCH_DEBOUNCE_MS = 250;
+
+/**
+ * Read an NDJSON response body incrementally, calling `onRecord` per parsed
+ * line. Handles partial lines across chunk boundaries by buffering and splitting
+ * on `\n`; malformed lines are skipped (never fatal).
+ */
+export async function readNdjson(body, onRecord) {
+  if (!body) return;
+  const reader = body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value ?? new Uint8Array(0), { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        try { onRecord(JSON.parse(line)); } catch { /* malformed line: ignore */ }
+      }
+    }
+    if (buf.trim()) { try { onRecord(JSON.parse(buf.trim())); } catch { /* ignore */ } }
+  } catch { /* aborted/network */ }
+}
+
+/**
+ * Fetch a workspace search as NDJSON. Resolves once the stream is consumed.
+ * Returns null on network/HTTP error (caller surfaces an inline message).
+ */
+export async function fetchSearch(ws, opts) {
+  const p = new URLSearchParams();
+  p.set("q", opts.q);
+  p.set("workspace", ws);
+  p.set("mode", opts.mode);
+  p.set("max", String(opts.max ?? SEARCH_ROW_CAP));
+  if (opts.case) p.set("case", opts.case);
+  if (opts.globs) p.set("globs", opts.globs);
+  try {
+    const res = await fetch("/browser/api/search?" + p.toString(), { signal: opts.signal });
+    if (!res.ok || !res.body) return null;
+    await readNdjson(res.body, opts.onRecord);
+    return true;
+  } catch {
+    if (opts.signal?.aborted) return null;
+    return null;
+  }
+}
+
+/** The dock Search panel: Name/Content toggle, debounced query, NDJSON results. */
+function SearchSection({ ws, t, onOpen }) {
+  const [q, setQ] = useState("");
+  const [debounced, setDebounced] = useState("");
+  const [mode, setMode] = useState("content");
+  const [rows, setRows] = useState([]);
+  const [truncated, setTruncated] = useState(false);
+  const [err, setErr] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [count, setCount] = useState(0);
+  const abortRef = useRef(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    const t2 = setTimeout(() => setDebounced(q.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t2);
+  }, [q]);
+
+  useEffect(() => {
+    abortRef.current?.abort(); // cancel any in-flight search before starting a new one
+    if (!debounced) { setRows([]); setCount(0); setTruncated(false); setErr(null); setLoading(false); return; }
+    const ac = new AbortController();
+    abortRef.current = ac;
+    const seq = ++seqRef.current;
+    setErr(null); setLoading(true); setRows([]); setCount(0); setTruncated(false);
+    const pending = [];
+    fetchSearch(ws, {
+      q: debounced,
+      mode,
+      max: SEARCH_ROW_CAP,
+      signal: ac.signal,
+      onRecord: (rec) => {
+        if (seq !== seqRef.current) return;
+        if (rec.t === "match") {
+          const key = rec.path + ":" + rec.line + ":" + (rec.col ?? 0);
+          if (pending.length >= SEARCH_ROW_CAP) { setTruncated(true); ac.abort(); return; }
+          if (!pending.some((r2) => r2.key === key)) { pending.push({ ...rec, key }); setCount((c) => c + 1); }
+        } else if (rec.t === "done") {
+          setTruncated(!!rec.truncated);
+        } else if (rec.t === "error") {
+          setErr(rec.message || "search error");
+        }
+      }
+    }).finally(() => {
+      if (seq === seqRef.current) { setLoading(false); setRows(pending.slice(0, SEARCH_ROW_CAP)); }
+    });
+    return () => { ac.abort(); };
+  }, [debounced, mode, ws]);
+
+  return (
+    <div className="dshfp-search" data-dsh-file-pane-search="1">
+      <div className="dshfp-search-bar">
+        <input
+          type="text"
+          value={q}
+          placeholder="Search workspace…"
+          aria-label="Search workspace"
+          onChange={(e) => setQ(e.target.value)}
+        />
+        <div className="dshfp-search-mode">
+          <button type="button" className={mode === "name" ? "on" : ""} onClick={() => setMode("name")}>Name</button>
+          <button type="button" className={mode === "content" ? "on" : ""} onClick={() => setMode("content")}>Content</button>
+        </div>
+      </div>
+      {loading ? <div className="dshfp-search-status">searching…</div> : null}
+      {err ? <div className="dshfp-search-status dshfp-search-err">{err}</div> : null}
+      {!loading && !err && rows.length === 0 && debounced
+        ? <div className="dshfp-search-status">no matches</div>
+        : null}
+      {count > 0 ? <div className="dshfp-search-meta">{count} match{count === 1 ? "" : "es"}{truncated ? ` · showing first ${SEARCH_ROW_CAP}` : ""}</div> : null}
+      <div className="dshfp-search-results">
+        {rows.map((r) => (
+          <button type="button" key={r.key} className="dshfp-sr" onClick={() => onOpen(r)}>
+            <span className="dshfp-sr-path">{r.path}{r.line && mode === "content" ? <em>:{r.line}</em> : null}</span>
+            {mode === "content" && r.text
+              ? <span className="dshfp-sr-snippet" dangerouslySetInnerHTML={{ __html: splitHighlight(r.text, r.pre ?? "", r.post ?? "") }} />
+              : null}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /**
  * DockRoot: the frame's right `details` column occupant (in-flow). The DSH
  * AppFrame reserves this column beside the conversation, so the conversation
@@ -390,7 +626,32 @@ function Breadcrumb({ path, onNavigate }) {
  * native DSH look. Contains a workspace-rooted file tree, breadcrumb nav, diff,
  * and the session changed-files list.
  */
-function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces, layout, getSession, getCwd }) {
+function ThemePicker({ t, value, onChange }) {
+  const ids = presetIds();
+  return (
+    <select
+      className="dshfp-theme-picker"
+      value={value ?? ""}
+      onChange={(e) => onChange(e.target.value)}
+      title={t?.("dock.theme") ?? "Theme"}
+      aria-label={t?.("dock.theme") ?? "Theme"}
+    >
+      {ids.map((id) => (
+        <option key={id} value={id}>
+          {id === "dsh-default" ? (t?.("dock.themeDefault") ?? "DSH default") : id}
+        </option>
+      ))}
+      <style>{`
+        .dshfp-theme-picker{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06));color:var(--dsw-alias-label-secondary,#c7ccd9);
+          border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));border-radius:5px;font:inherit;font-size:12px;max-width:118px;
+          padding:1px 4px;cursor:pointer}
+        .dshfp-theme-picker:hover{border-color:var(--dsw-alias-border-l3,rgba(255,255,255,.2));color:var(--dsw-alias-label-primary,#eef1f8)}
+      `}</style>
+    </select>
+  );
+}
+
+function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces, layout, getSession, getCwd, themeController, defaultTheme }) {
   const rootRef = useRef(null);
   const [path, setPath] = useState(undefined); // undefined → root listing
   const [session, setSession] = useState(undefined);
@@ -401,7 +662,21 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const [hoverAct, setHoverAct] = useState(null); // which activity the popup follows while hovering the rail (null=follow current view)
   const [stamp, setStamp] = useState(0);
   const [changeView, setChangeView] = useState(false); // sidebar shows Changes (VSCode Source-Control style) vs the file tree
+  const [searchView, setSearchView] = useState(false); // sidebar shows the Search section instead of tree/changes
   const [changed, setChanged] = useState([]);
+  const [git, setGit] = useState({ git: false, current: null, branches: [], write: false }); // branch state for the status bar
+  const [branchOpen, setBranchOpen] = useState(false); // branch switcher dropdown
+  const [themeId, setThemeId] = useState(() => {
+    try { return globalThis.localStorage?.getItem(THEME_STORAGE_KEY) ?? ""; } catch { return ""; }
+  });
+  const [gitErr, setGitErr] = useState(null);
+  const [gitView, setGitView] = useState("changes"); // "changes" | "history" within the git activity
+  const [history, setHistory] = useState([]); // commit oneline list
+  const [commitMsg, setCommitMsg] = useState("");
+  const [commitBusy, setCommitBusy] = useState(false);
+  const [blameOn, setBlameOn] = useState(false); // blame gutter on the file view
+  const [commitTarget, setCommitTarget] = useState(null); // { sha } → ?gitview=commit src
+  const [watching, setWatching] = useState(true); // live-watch health (false → poll fallback)
 
   // Restore the last docked path/session once (before any user open).
   const seeded = useRef(false);
@@ -453,23 +728,124 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
     return () => window.removeEventListener("keydown", onKey);
   }, [layout]);
 
-  // Session "changed files": while the Changes view is open, poll the host spill
-  // lens so newly edited files appear without user action.
+  // Git: current branch + branch list for the status bar (workspace = active cwd).
   useEffect(() => {
-    const sid = session ?? (typeof getSession === "function" ? getSession() : undefined);
-    if (!changeView || !sid) { if (!changeView) setChanged([]); return; }
+    const ws = typeof getCwd === "function" ? getCwd() : undefined;
+    if (!ws) { setGit((g) => ({ ...g, git: false, current: null, branches: [] })); return; }
+    let cancelled = false;
+    fetchGitBranch(ws).then((d) => {
+      if (cancelled || !d) return;
+      setGit({ git: !!d.git, current: d.current ?? null, branches: Array.isArray(d.branches) ? d.branches : [], write: d.write === true });
+    });
+    return () => { cancelled = true; };
+  }, [getCwd, session, getSession]);
+
+  // History: fetch the commit oneline list when the History sub-view is active.
+  useEffect(() => {
+    if (gitView !== "history") return;
+    const ws = typeof getCwd === "function" ? getCwd() : undefined;
+    if (!ws) { setHistory([]); return; }
+    let cancelled = false;
+    fetchGitLog(ws, 100).then((entries) => { if (!cancelled) setHistory(Array.isArray(entries) ? entries : []); });
+    return () => { cancelled = true; };
+  }, [gitView, getCwd, session, stamp]);
+
+  // Theme preset: on mount apply the persisted/config choice; on change apply +
+  // persist. `themeId === ""` means no override (DSH default applied by clear).
+  useEffect(() => {
+    if (!themeController) return;
+    if (!themeId) { themeController.clear(); return; }
+    themeController.apply(themeId);
+    try { globalThis.localStorage?.setItem(THEME_STORAGE_KEY, themeId); } catch { /* ignore */ }
+  }, [themeId, themeController]);
+
+  // First-mount: reconcile the persisted choice against the config seed.
+  useEffect(() => {
+    if (!themeController) return;
+    let saved = "";
+    try { saved = globalThis.localStorage?.getItem(THEME_STORAGE_KEY) ?? ""; } catch { /* ignore */ }
+    const id = saved || defaultTheme || "";
+    if (id) setThemeId(id); else themeController.clear();
+    return () => themeController.dispose?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [themeController]);
+
+  // Git changes (source-control style): while the Changes view is open, keep the
+  // dirty-file set fresh. Live source is the /browser/ws push (Phase 5); the 4s
+  // poll runs ONLY as fallback when WS is unavailable or watching:false (ENOSPC)
+  // — push and poll never run simultaneously.
+  useEffect(() => {
+    if (!changeView) { setChanged([]); return; }
+    const ws2 = typeof getCwd === "function" ? getCwd() : undefined;
+    if (!ws2) return;
     let cancelled = false;
     const load = async () => {
-      const c = await fetchChanged(sid);
-      if (!cancelled && c) setChanged((prev) => {
-        const has = new Set(c.map((e) => e.path));
-        return c.concat(prev.filter((p) => !has.has(p.path)));
-      });
+      const c = await fetchGitStatus(ws2);
+      if (cancelled || !c) return;
+      setChanged(Array.isArray(c.changes) ? c.changes.map((e) => ({ path: e.path, status: e.status, staged: !!e.staged })) : []);
     };
-    load();
-    const t = setInterval(load, 4000);
-    return () => { cancelled = true; clearInterval(t); };
-  }, [changeView, session, getSession]);
+    const onGitStatus = (d) => {
+      if (cancelled) return;
+      setChanged(Array.isArray(d?.changes) ? d.changes.map((e) => ({ path: e.path, status: e.status, staged: !!e.staged })) : []);
+    };
+    let liveSource = "push"; // "push" | "poll"
+    const poll = () => {
+      liveSource = "poll";
+      load();
+      const t = setInterval(load, watchFallbackMs);
+      return () => clearInterval(t);
+    };
+    const startPoll = () => { if (liveSource !== "poll") pollCleanup = poll(); };
+    let pollCleanup = null;
+    // WS stub: connect with exponential backoff clamped to 1–30s.
+    let sock = null, retry = 0, reconnectTimer = null;
+    const connect = () => {
+      if (cancelled || sock) return;
+      try {
+        const proto = (globalThis.location?.protocol === "https:") ? "wss:" : "ws:";
+        sock = new WebSocket(proto + "//" + globalThis.location.host + "/browser/ws");
+      } catch { startPoll(); return; }
+      sock.onopen = () => { retry = 0; };
+      sock.onmessage = (ev) => {
+        let frame;
+        try { frame = JSON.parse(ev.data); } catch { return; }
+        if (frame?.type === "status") {
+          if (frame.watching === false) { setWatching(false); startPoll(); }
+          else { setWatching(true); if (liveSource === "poll" && pollCleanup) { pollCleanup(); pollCleanup = null; liveSource = "push"; } }
+          return;
+        }
+        if (frame?.type === "dirty" && frame.workspace === ws2) {
+          refreshDirty(frame, {
+            workspace: ws2,
+            viewPath: path,
+            base: ws2,
+            setStamp,
+            onGitStatus
+          });
+        }
+      };
+      sock.onclose = () => {
+        sock = null;
+        if (cancelled) return;
+        const delay = Math.min(1000 * Math.pow(2, retry), 30000);
+        retry++;
+        if (retry > 3) startPoll(); // WS unavailable after a few retries → poll
+        reconnectTimer = setTimeout(connect, delay);
+      };
+      sock.onerror = () => { try { sock?.close(); } catch {} };
+    };
+    connect();
+    // Fallback when the host signals watching:false (ENOSPC) — arm poll now.
+    if (watching === false) { pollCleanup = poll(); }
+    load(); // initial status load regardless
+    return () => {
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try { sock?.close(); } catch {}
+      if (pollCleanup) pollCleanup();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [changeView, getCwd, session, git.current, stamp]);
 
   if (!open) return null;
 
@@ -478,23 +854,71 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   // The file tree + Home root here instead of the host root ($HOME) so the dock
   // shows only the active workspace, not the whole hosting machine.
   const base = typeof getCwd === "function" ? getCwd() : undefined;
+  // Fallback poll interval (Phase 5): from DSH settings when surfaced, else 4000.
+  const watchFallbackMs = 4000;
   const viewPath = path ?? base; // undefined path → the workspace root listing
-  const src = dockSrc(viewPath, { diff, session: effSession });
+  const src = commitTarget
+    ? dockSrc(viewPath, { workspace: base, gitview: "commit", sha: commitTarget.sha })
+    : dockSrc(viewPath, { diff, session: effSession, workspace: base, blame: blameOn });
   const needSessionNote = diff && isTextPath(viewPath) && effSession === undefined;
   const nav = (next) => { setPath(next); }; // navigating resets diff
   // Opening a file focuses the content and hides the tree (tab-like); the tree
   // stays reachable via a hover-reveal strip. Navigating to a dir re-shows it.
-  const openFile = (p) => { setPath(p); setDiff(false); setShowTree(false); persistDockState({ path: p, session: effSession }); };
+  const openFile = (p) => { setPath(p); setDiff(false); setCommitTarget(null); setBlameOn(false); setShowTree(false); persistDockState({ path: p, session: effSession }); };
   const navDir = (p) => { setPath(p); setDiff(false); setShowTree(true); }; // dir/root nav keeps the tree visible
   // VSCode-style activity toggle: clicking the ACTIVE view's icon collapses the
   // panel back to the rail; clicking it again (or another icon) opens/switches.
   const onAct = (v) => {
     if (showTree && changeView === v) setShowTree(false);
     else { setChangeView(v); setShowTree(true); }
+    setSearchView(false);
+  };
+  // Search activity: clicking it collapses if already open, else shows Search.
+  const onActSearch = () => {
+    if (showTree && searchView) setShowTree(false);
+    else { setChangeView(false); setSearchView(true); setShowTree(true); }
+  };
+  // Open a search result in the pane (result.path is workspace-relative).
+  const openSearchResult = (r) => {
+    const p = typeof r?.path === "string" ? r.path : "";
+    openFile(base && p ? base + "/" + p.replace(/^\/+/, "") : p);
+  };
+  // Switch branch via the server, then refresh branch + dirty set + the iframe.
+  const doCheckout = async (b) => {
+    setBranchOpen(false); setGitErr(null);
+    const ws = typeof getCwd === "function" ? getCwd() : undefined;
+    if (!ws || b === git.current) return;
+    const r = await checkoutGitBranch(ws, b);
+    const d = await fetchGitBranch(ws);
+    if (d) setGit({ git: !!d.git, current: d.current ?? null, branches: Array.isArray(d.branches) ? d.branches : [] });
+    if (r && !r.ok) setGitErr(r.error || "checkout failed");
+    setStamp((s) => s + 1); // reload the iframe (path may have moved / tree refresh)
   };
   const relC = stripBase(viewPath, base);    // path relative to the workspace (for breadcrumb/Up)
   const upRel = upPath(relC);                // parent relative to the workspace (undefined = at base)
   const navClose = (rel) => nav(base && rel ? base + "/" + rel.replace(/^\/+/, "") : base ?? undefined);
+  // History: open a commit's file diff in the iframe (?gitview=commit&sha=).
+  const openCommit = (sha) => {
+    if (!sha || !viewPath) return;
+    setPath(viewPath); // keep current file as the diff target
+    setDiff(false); setBlameOn(false);
+    // Set a pending commit target via a small state so src recomputes below.
+    setCommitTarget({ sha });
+    setStamp((s) => s + 1);
+  };
+  // Local commit (gated: only visible when git.write === true).
+  const doCommit = async () => {
+    const ws = typeof getCwd === "function" ? getCwd() : undefined;
+    if (!ws || !commitMsg.trim()) return;
+    setCommitBusy(true); setGitErr(null);
+    const r = await commitGit(ws, commitMsg.trim());
+    setCommitBusy(false);
+    if (r && !r.ok) { setGitErr(r.error || "commit failed"); return; }
+    setCommitMsg("");
+    const d = await fetchGitBranch(ws);
+    if (d) setGit({ git: !!d.git, current: d.current ?? null, branches: Array.isArray(d.branches) ? d.branches : [], write: d.write === true });
+    setStamp((s) => s + 1);
+  };
   return (
     <div
       ref={rootRef}
@@ -505,6 +929,12 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
     >
       <style>{`
         .dshfp-dock{display:flex;flex-direction:column;height:100%;min-width:0;overflow:hidden;background:var(--dsw-alias-bg-base,#0f1117);color:var(--dsw-alias-label-primary,#eef1f8);font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;border-left:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12))}
+        .dshfp-dock *{scrollbar-width:thin;scrollbar-color:var(--dsw-alias-border-l3,rgba(255,255,255,.18)) transparent}
+        .dshfp-dock *::-webkit-scrollbar{width:9px;height:9px}
+        .dshfp-dock *::-webkit-scrollbar-track{background:transparent}
+        .dshfp-dock *::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l3,rgba(255,255,255,.2));border-radius:6px;border:2px solid var(--dsw-alias-bg-base,#0f1117)}
+        .dshfp-dock *::-webkit-scrollbar-thumb:hover{background:var(--dsw-alias-state-business-primary,#5b96ff)}
+        .dshfp-dock *::-webkit-scrollbar-corner{background:transparent}
         .dshfp-dock-head{display:flex;align-items:center;gap:4px;padding:5px 8px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));flex:none;min-height:34px;flex-wrap:wrap}
         .dshfp-dock-head .t{font-weight:600;color:var(--dsw-alias-label-primary,#eef1f8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;padding:0 4px}
         .dshfp-dock-head button{background:none;border:0;color:var(--dsw-alias-label-secondary,#c7ccd9);cursor:pointer;padding:3px 6px;border-radius:5px;font:inherit;line-height:1;display:inline-flex;align-items:center}
@@ -526,6 +956,22 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-tree-pop{position:absolute;left:100%;top:0;bottom:0;width:200px;background:var(--dsw-alias-bg-base,#0f1117);border-right:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));box-shadow:6px 0 16px rgba(0,0,0,.35);z-index:19;overflow:auto}
         .dshfp-changes{display:flex;flex-direction:column;gap:0}
         .dshfp-changes-head{padding:5px 8px 3px;font-family:var(--dsw-alias-font-sans,ui-monospace,Menlo,Consolas,monospace);font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--dsw-alias-label-tertiary,#9aa3b5);flex:none}
+        .dshfp-gv-toggle{display:inline-flex;gap:2px}
+        .dshfp-gv-toggle button{background:none;border:0;color:var(--dsw-alias-label-tertiary,#9aa3b5);cursor:pointer;font:inherit;font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:1px 5px;border-radius:3px}
+        .dshfp-gv-toggle button:hover{color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-gv-toggle button.on{color:var(--dsw-alias-state-business-primary,#5b96ff)}
+        .dshfp-changes-list{overflow:auto;flex:1;min-height:0}
+        .dshfp-history{overflow:auto;flex:1;min-height:0;padding:2px 4px}
+        .dshfp-history-item{display:block;width:100%;text-align:left;background:none;border:0;cursor:pointer;padding:3px 6px;border-radius:4px;color:var(--dsw-alias-label-secondary,#c7ccd9);font:inherit;font-size:11px;line-height:1.4}
+        .dshfp-history-item:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-history-short{color:var(--dsw-alias-state-business-primary,#5b96ff);font-size:11px}
+        .dshfp-history-subj{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .dshfp-history-meta{color:var(--dsw-alias-label-tertiary,#9aa3b5);font-size:10px}
+        .dshfp-commit{display:flex;gap:4px;padding:5px 6px;border-top:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));flex:none}
+        .dshfp-commit input{flex:1;min-width:0;background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06));border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));color:var(--dsw-alias-label-primary,#eef1f8);border-radius:5px;padding:3px 6px;font:inherit;font-size:11px}
+        .dshfp-commit input:focus{outline:none;border-color:var(--dsw-alias-state-business-primary,#5b96ff)}
+        .dshfp-commit-btn{background:var(--dsw-alias-state-business-primary,rgba(91,150,255,.16));border:1px solid var(--dsw-alias-state-business-primary,#5b96ff);color:var(--dsw-alias-label-primary,#eef1f8);border-radius:5px;cursor:pointer;font:inherit;font-size:11px;padding:3px 8px;flex:none}
+        .dshfp-commit-btn:disabled{opacity:.4;cursor:default}
         .dshfp-dock iframe{flex:1;width:100%;border:0;min-height:0;background:#0f1117}
         .dshfp-tree-l{list-style:none;margin:0;padding:0}
         .dshfp-tree-c{list-style:none;margin:0;padding:0}
@@ -546,9 +992,47 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-changed-item{display:flex;align-items:center;gap:6px;width:100%;text-align:left;background:none;border:0;cursor:pointer;padding:2px 6px;border-radius:4px;color:var(--dsw-alias-label-secondary,#c7ccd9);font:inherit;font-size:12px;white-space:nowrap;overflow:hidden}
         .dshfp-changed-item:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
         .dshfp-changed-item .nm{overflow:hidden;text-overflow:ellipsis}
-        .dshfp-changed-dot{flex:none;width:16px;text-align:center;font-size:10px;font-weight:700;border-radius:3px;padding:0 2px;color:var(--dsw-alias-bg-base,#0f1117)}
-        .dshfp-changed-dot[data-status="added"]{background:#2fbf71}
-        .dshfp-changed-dot[data-status="modified"]{background:#e8b341}
+        .dshfp-changed-dot{flex:none;width:18px;text-align:center;font-size:10px;font-weight:700;border-radius:3px;padding:0 2px;color:var(--dsw-alias-bg-base,#0f1117)}
+        .dshfp-changed-dot[data-status="A"]{background:#2fbf71}
+        .dshfp-changed-dot[data-status="M"]{background:#e8b341}
+        .dshfp-changed-dot[data-status="D"]{background:#e5636a}
+        .dshfp-changed-dot[data-status="R"],[data-status="C"]{background:#5b96ff}
+        .dshfp-changed-dot[data-status="?"]{background:#9aa3b5}
+        .dshfp-git{display:flex;flex-direction:column;gap:0}
+        .dshfp-status{display:flex;align-items:center;gap:6px;padding:3px 8px;border-top:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));font-size:12px;color:var(--dsw-alias-label-tertiary,#9aa3b5);flex:none;position:relative;font-family:var(--dsw-alias-font-sans,ui-monospace,Menlo,Consolas,monospace)}
+        .dshfp-status .dshfp-branch{display:inline-flex;align-items:center;gap:5px;background:none;border:0;color:var(--dsw-alias-label-secondary,#c7ccd9);cursor:pointer;font:inherit;font-size:12px;padding:1px 6px;border-radius:4px;max-width:170px}
+        .dshfp-status .dshfp-branch:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-status .dshfp-branch-ic{color:var(--dsw-alias-state-business-primary,#5b96ff);flex:none}
+        .dshfp-status .dshfp-branch-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+        .dshfp-status .dshfp-branch-meta{flex:none;opacity:.7}
+        .dshfp-status .dshfp-branch-menu{position:absolute;bottom:calc(100% + 4px);left:4px;min-width:180px;max-width:240px;max-height:300px;overflow:auto;background:var(--dsw-alias-bg-base,#0f1117);border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.18));border-radius:8px;box-shadow:0 -6px 24px rgba(0,0,0,.4);z-index:31;padding:4px}
+        .dshfp-status .dshfp-branch-item{display:block;width:100%;text-align:left;background:none;border:0;color:var(--dsw-alias-label-secondary,#c7ccd9);cursor:pointer;font:inherit;font-size:12px;padding:4px 8px;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .dshfp-status .dshfp-branch-item:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-status .dshfp-branch-item.on{color:var(--dsw-alias-state-business-primary,#5b96ff);font-weight:600}
+        .dshfp-status .dshfp-branch-item.check{color:var(--dsw-alias-label-tertiary,#9aa3b5);border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
+        .dshfp-status-sp{flex:1}
+        .dshfp-status-changes{max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-state-warn-primary,#f0b386)}
+        .dshfp-git-err{flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-state-danger-primary,#ff6b6b)}
+        .dshfp-search{display:flex;flex-direction:column;gap:0;min-height:0}
+        .dshfp-search-panel{width:230px;flex:none;border-right:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12))}
+        .dshfp-search-head{padding:5px 8px 3px;font-family:var(--dsw-alias-font-sans,ui-monospace,Menlo,Consolas,monospace);font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--dsw-alias-label-tertiary,#9aa3b5);flex:none}
+        .dshfp-search-bar{display:flex;align-items:center;gap:6px;padding:4px 6px;flex:none}
+        .dshfp-search-bar input{flex:1;min-width:0;background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06));border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));color:var(--dsw-alias-label-primary,#eef1f8);border-radius:5px;padding:3px 6px;font:inherit;font-size:12px}
+        .dshfp-search-bar input:focus{outline:none;border-color:var(--dsw-alias-state-business-primary,#5b96ff)}
+        .dshfp-search-mode{display:flex;gap:2px;flex:none}
+        .dshfp-search-mode button{background:none;border:0;color:var(--dsw-alias-label-tertiary,#9aa3b5);cursor:pointer;font:inherit;font-size:11px;padding:2px 6px;border-radius:4px}
+        .dshfp-search-mode button:hover{color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-search-mode button.on{color:var(--dsw-alias-state-business-primary,#5b96ff);background:rgba(91,150,255,.12)}
+        .dshfp-search-status{color:var(--dsw-alias-label-tertiary,#9aa3b5);font-size:11px;padding:0 8px;flex:none}
+        .dshfp-search-status.dshfp-search-err{color:var(--dsw-alias-state-danger-primary,#ff6b6b)}
+        .dshfp-search-meta{color:var(--dsw-alias-label-tertiary,#9aa3b5);font-size:10px;padding:2px 8px;flex:none}
+        .dshfp-search-results{flex:1;min-height:0;overflow:auto;padding:2px 4px}
+        .dshfp-sr{display:block;width:100%;text-align:left;background:none;border:0;cursor:pointer;padding:3px 6px;border-radius:4px;color:var(--dsw-alias-label-secondary,#c7ccd9);font:inherit;font-size:12px;line-height:1.45}
+        .dshfp-sr:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-sr-path{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .dshfp-sr-path em{font-style:normal;color:var(--dsw-alias-label-tertiary,#9aa3b5);margin-left:2px}
+        .dshfp-sr-snippet{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary,#9aa3b5);font-size:11px}
+        .dshfp-sr-snippet mark{background:rgba(232,179,65,.28);color:var(--dsw-alias-state-warn-primary,#f0b386);border-radius:2px;padding:0 1px}
       `}</style>
       <div className="dshfp-dock-head">
         <button type="button" title={t?.("dock.home") ?? "Files root"} onClick={() => { navDir(base); }}>
@@ -560,9 +1044,13 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         <button type="button" title={t?.("dock.reload") ?? "Reload"} onClick={() => setStamp((s) => s + 1)}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 3.5V7h-3.5"/><path d="M3 12.5V9h3.5"/><path d="M13 7a5 5 0 0 0-8.5-3.5L3 5M13 9l-1.5 1.5A5 5 0 0 1 3 7"/></svg>
         </button>
+        <ThemePicker t={t} value={themeId || "dsh-default"} onChange={(id) => setThemeId(id)} />
         <Breadcrumb path={relC} onNavigate={(rel) => { navDir(navClose(rel)); }} />
         <button type="button" title={t?.("dock.diff") ?? "Version diff"} data-on={diff && isTextPath(path) || undefined} disabled={!isTextPath(path) || path === undefined} onClick={() => setDiff((v) => !v)}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h4M4 8h4M4 12h4"/><path d="M12 3.5v9"/><path d="M10.5 5.5 12 4l1.5 1.5M10.5 10.5 12 12l1.5-1.5"/></svg>
+        </button>
+        <button type="button" title={t?.("dock.blame") ?? "Blame"} data-on={blameOn || undefined} disabled={!isTextPath(path) || path === undefined} onClick={() => { setBlameOn((v) => !v); setDiff(false); setCommitTarget(null); }}>
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 5.5 8 2.5l5.5 3v6L8 14.5l-5.5-3z"/><path d="M8 8.5 13 5.5M8 8.5 3 5.5M8 8.5V14"/></svg>
         </button>
         <button type="button" title={t?.("dock.openTab") ?? "Open in new tab"} onClick={() => window.open(src, "_blank", "noopener")}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6.5 9.5 13 3"/><path d="M8.5 3H13v4.5"/><path d="M13 9v3.5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5H7"/></svg>
@@ -582,6 +1070,9 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
             <button type="button" className="dshfp-act" onMouseEnter={() => { setHoverAct(true); if (!showTree) setTreeHover(true); }} data-on={changeView || undefined} title={t?.("dock.git") ?? "Git / Changes"} onClick={() => onAct(true)}>
               <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h4M4 8h4M4 12h4"/><path d="M12 3.5v9"/><path d="M10.5 5.5 12 4l1.5 1.5M10.5 10.5 12 12l1.5-1.5"/></svg>
             </button>
+            <button type="button" className="dshfp-act" onMouseEnter={() => { setHoverAct(false); if (!showTree) setTreeHover(true); }} data-on={searchView || undefined} title={t?.("dock.search") ?? "Search"} onClick={onActSearch}>
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>
+            </button>
             <span className="dshfp-sp" />
             <button type="button" className="dshfp-act" title={showTree ? (t?.("dock.collapseTree") ?? "Collapse") : (t?.("dock.revealTree") ?? "Show")} onClick={() => setShowTree((v) => !v)}>
               {showTree
@@ -591,42 +1082,112 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
           </div>
           {showTree ? (
             <div className="dshfp-panel">
-              {changeView ? (
-                <div className="dshfp-dock-tree dshfp-changes" aria-label={t?.("dock.changes") ?? "Changes"}>
-                  <div className="dshfp-changes-head">{t?.("dock.changesHead") ?? "Changes in this session"}</div>
-                  {changed.length === 0
-                    ? <div className="dshfp-tree-empty">( none changed yet )</div>
-                    : changed.map((c) => (
-                      <button type="button" key={c.path} className="dshfp-changed-item" onClick={() => { setPath(c.path); setDiff(true); setShowTree(false); const sid = effSession; if (sid) { setSession(sid); persistDockState({ path: c.path, session: sid }); } }}>
-                        <span className="dshfp-changed-dot" data-status={c.status}>{c.status === "added" ? "A" : "M"}</span>
-                        <span className="nm">{c.path}</span>
-                      </button>
-                    ))}
+              {searchView ? (
+                <div className="dshfp-dock-tree dshfp-search" aria-label={t?.("dock.search") ?? "Search"}>
+                  <div className="dshfp-search-head">{t?.("dock.search") ?? "Search"}</div>
+                  <SearchSection ws={base} t={t} onOpen={openSearchResult} />
+                </div>
+              ) : changeView ? (
+                <div className="dshfp-dock-tree dshfp-changes" aria-label={t?.("dock.git") ?? "Git"}>
+                  <div className="dshfp-changes-head">
+                    <span className="dshfp-gv-toggle">
+                      <button type="button" className={gitView === "changes" ? "on" : ""} onClick={() => setGitView("changes")}>{t?.("dock.changesHead") ?? "Changes"}</button>
+                      <button type="button" className={gitView === "history" ? "on" : ""} onClick={() => setGitView("history")}>{t?.("dock.history") ?? "History"}</button>
+                    </span>
+                  </div>
+                  {gitView === "history" ? (
+                    history.length === 0
+                      ? <div className="dshfp-tree-empty">( no history )</div>
+                      : <div className="dshfp-history">
+                        {history.map((h) => (
+                          <button type="button" key={h.sha} className="dshfp-history-item" data-sha={h.sha} onClick={() => openCommit(h.sha)}>
+                            <code className="dshfp-history-short">{h.short}</code>
+                            <span className="dshfp-history-subj">{h.subject}</span>
+                            <span className="dshfp-history-meta">{(h.author ?? "").split(" ")[0]} · {(h.date ?? "").slice(0, 10)}</span>
+                          </button>
+                        ))}
+                      </div>
+                  ) : (
+                    <div className="dshfp-changes-list">
+                      {changed.length === 0
+                        ? <div className="dshfp-tree-empty">( working tree clean )</div>
+                        : changed.map((c) => (
+                          <button type="button" key={c.path} className="dshfp-changed-item" onClick={() => { setPath(c.path); setDiff(true); setCommitTarget(null); setShowTree(false); const sid = effSession; if (sid) { setSession(sid); persistDockState({ path: c.path, session: sid }); } }}>
+                            <span className="dshfp-changed-dot" data-status={c.status}>{c.status === "?" ? "?" : (c.status || "M")[0]}</span>
+                            <span className="nm">{c.path}</span>
+                          </button>
+                        ))}
+                      {git.write ? (
+                        <div className="dshfp-commit">
+                          <input
+                            type="text"
+                            value={commitMsg}
+                            placeholder={t?.("dock.commitPlaceholder") ?? "Commit message…"}
+                            disabled={commitBusy}
+                            onChange={(e) => setCommitMsg(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter") doCommit(); }}
+                          />
+                          <button type="button" className="dshfp-commit-btn" disabled={commitBusy || !commitMsg.trim()} onClick={doCommit}>
+                            {t?.("dock.commit") ?? "Commit"}
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
               ) : (
                 <nav className="dshfp-dock-tree" aria-label={t?.("dock.tree") ?? "File tree"}>
-                  <FileTree path={base} onOpen={openFile} activePath={viewPath} />
+                  <FileTree path={base} workspace={base} onOpen={openFile} activePath={viewPath} />
                 </nav>
               )}
             </div>
           ) : (
-            treeHover ? (
-              <nav className="dshfp-dock-tree dshfp-tree-pop" aria-label={t?.("dock.tree") ?? "File tree"} onMouseEnter={() => setTreeHover(true)} onMouseLeave={() => setTreeHover(false)}>
-                {(hoverAct ?? changeView)
-                  ? changed.length === 0
-                    ? <div className="dshfp-tree-empty">( none changed yet )</div>
-                    : changed.map((c) => (
-                      <button type="button" key={c.path} className="dshfp-changed-item" onClick={() => { setPath(c.path); setDiff(true); setShowTree(false); const sid = effSession; if (sid) { setSession(sid); persistDockState({ path: c.path, session: sid }); } }}>
-                        <span className="dshfp-changed-dot" data-status={c.status}>{c.status === "added" ? "A" : "M"}</span>
-                        <span className="nm">{c.path}</span>
-                      </button>
-                    ))
-                  : <FileTree path={base} onOpen={openFile} activePath={viewPath} />}
-              </nav>
-            ) : null
+            searchView ? (
+              <div className="dshfp-panel dshfp-search-panel">
+                <div className="dshfp-dock-tree dshfp-search" aria-label={t?.("dock.search") ?? "Search"}>
+                  <div className="dshfp-search-head">{t?.("dock.search") ?? "Search"}</div>
+                  <SearchSection ws={base} t={t} onOpen={openSearchResult} />
+                </div>
+              </div>
+            ) : (
+              treeHover ? (
+                <nav className="dshfp-dock-tree dshfp-tree-pop" aria-label={t?.("dock.tree") ?? "File tree"} onMouseEnter={() => setTreeHover(true)} onMouseLeave={() => setTreeHover(false)}>
+                  {(hoverAct ?? changeView)
+                    ? changed.length === 0
+                      ? <div className="dshfp-tree-empty">( working tree clean )</div>
+                      : changed.map((c) => (
+                        <button type="button" key={c.path} className="dshfp-changed-item" onClick={() => { setPath(c.path); setDiff(true); setShowTree(false); const sid = effSession; if (sid) { setSession(sid); persistDockState({ path: c.path, session: sid }); } }}>
+                          <span className="dshfp-changed-dot" data-status={c.status}>{c.status === "?" ? "?" : (c.status || "M")[0]}</span>
+                          <span className="nm">{c.path}</span>
+                        </button>
+                      ))
+                    : <FileTree path={base} workspace={base} onOpen={openFile} activePath={viewPath} />}
+                </nav>
+              ) : null
+            )
           )}
         </div>
         <iframe key={path + ":" + diff + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
+      </div>
+      {gitErr ? <div className="dshfp-git-err">{gitErr}</div> : null}
+      <div className="dshfp-status">
+        <button type="button" className="dshfp-branch" onClick={() => setBranchOpen((o) => !o)} title={t?.("dock.branch") ?? "Git branch"}>
+          <span className="dshfp-branch-ic">⑂</span>
+          <span className="dshfp-branch-name">{git.current ?? (git.git ? "(detached)" : "no git")}</span>
+          {git.git ? <span className="dshfp-branch-meta">⌄</span> : null}
+        </button>
+        {branchOpen ? (
+          <div className="dshfp-branch-menu">
+            {git.branches.length === 0
+              ? <div className="dshfp-branch-item">( no branches )</div>
+              : git.branches.map((b) => (
+                  <button key={b} type="button" className={"dshfp-branch-item" + (b === git.current ? " on" : "")} onClick={() => doCheckout(b)}>{b}</button>
+                ))}
+            <button type="button" className="dshfp-branch-item check" onClick={() => setBranchOpen(false)}>close</button>
+          </div>
+        ) : null}
+        <span className="dshfp-status-sp" />
+        <span className="dshfp-status-changes">{git.git && changed.length > 0 ? changed.length + " changed" : ""}</span>
       </div>
     </div>
   );
@@ -642,6 +1203,8 @@ function createDockEntry(services) {
       layout={services.layout}
       getSession={services.getSession}
       getCwd={services.getCwd}
+      themeController={services.themeController}
+      defaultTheme={services.defaultTheme}
     />
   );
 }
@@ -652,11 +1215,16 @@ function isTextPath(p) {
 }
 
 /** Build the dock iframe src from the current location (pure, testable). */
-function dockSrc(path, { diff = false, session } = {}) {
-  let q = "/browser/?path=" + encodeURIComponent(path ?? "") + "&embed=1";
-  if (diff && isTextPath(path)) {
-    q = "/browser/?path=" + encodeURIComponent(path) + "&diff=1" + (session ? "&session=" + encodeURIComponent(session) : "") + "&embed=1";
+function dockSrc(path, { diff = false, session, workspace, gitview, sha, blame = false } = {}) {
+  const ws = workspace ? "&workspace=" + encodeURIComponent(workspace) : "";
+  if (gitview === "commit" && path) {
+    return "/browser/?path=" + encodeURIComponent(path) + "&gitview=commit&sha=" + encodeURIComponent(sha ?? "") + ws + "&embed=1";
   }
+  let q = "/browser/?path=" + encodeURIComponent(path ?? "") + ws + "&embed=1";
+  if (diff && isTextPath(path)) {
+    q = "/browser/?path=" + encodeURIComponent(path) + "&diff=1" + (session ? "&session=" + encodeURIComponent(session) : "") + ws + "&embed=1";
+  }
+  if (blame && isTextPath(path)) q += "&blame=1";
   return q;
 }
 
@@ -707,6 +1275,12 @@ function apply(ctx) {
   if (layout === undefined) {
     throw new Error("dsh-file-pane: ctx.layout missing — add 'layout' to the bundle-exported inject list in client/index.tsx");
   }
+  // Theme runtime (ThemeRuntime from dsh-client-ui-theme). Required like layout —
+  // the theme picker rides it; a missing service fails boot loudly.
+  const theme = ctx.get("theme");
+  if (theme === undefined) {
+    throw new Error("dsh-file-pane: ctx.theme missing — add 'theme' to the bundle-exported inject list in client/index.tsx and @deepseek-ai/dsh-client-ui-theme to dsh.client.inject in package.json");
+  }
   // Connection classification is stable per page loads (URL hostname), so read
   // it once and close over the same value for both selector and inject.
   const isLoopback = connection.isLoopback === true;
@@ -724,14 +1298,19 @@ function apply(ctx) {
     try {
       const snapshot = sessions?.list?.getSnapshot?.();
       const current = snapshot?.current;
-      const entry = current != null ? snapshot?.entries?.find((e) => e.id === current) : undefined;
-      return entry?.cwd;
+      // DSH's sessions.list snapshot is `{ ids, byId, current, ... }` where
+      // `byId[sessionId]` carries `{ id, cwd, title, ... }` — there is NO
+      // `entries` array. Reading `.entries.find(...)` threw and the try/catch
+      // swallowed it, so `base` fell back to undefined → the dock rooted at the
+      // server's $HOME instead of the active workspace. Read through byId.
+      const record = current != null ? snapshot?.byId?.[current] : undefined;
+      return record?.cwd;
     } catch { return undefined; }
   };
   const resolvePath = (rel) => resolvePanePath(getCwd(), rel);
   ctx.effect(() => ctx.locale.register(NS, {
-    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.tree": "File tree", "dock.files": "Files", "dock.git": "Git / Changes", "dock.changes": "Changes", "dock.changesHead": "Changes in this session", "dock.revealTree": "Show file tree", "dock.collapseTree": "Collapse file tree", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first." },
-    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.tree": "文件树", "dock.files": "文件", "dock.git": "Git / 更改", "dock.changes": "更改", "dock.changesHead": "本会话的更改", "dock.revealTree": "显示文件树", "dock.collapseTree": "折叠文件树", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件" }
+    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.tree": "File tree", "dock.files": "Files", "dock.git": "Git / Changes", "dock.changes": "Changes", "dock.changesHead": "Changes", "dock.branch": "Git branch", "dock.revealTree": "Show file tree", "dock.collapseTree": "Collapse file tree", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first.", "dock.theme": "Theme", "dock.themeDefault": "DSH default", "dock.search": "Search", "dock.history": "History", "dock.commit": "Commit", "dock.commitPlaceholder": "Commit message…", "dock.blame": "Blame" },
+    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.tree": "文件树", "dock.files": "文件", "dock.git": "Git / 更改", "dock.changes": "更改", "dock.changesHead": "更改", "dock.branch": "Git 分支", "dock.revealTree": "显示文件树", "dock.collapseTree": "折叠文件树", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件", "dock.theme": "主题", "dock.themeDefault": "默认", "dock.search": "搜索", "dock.history": "历史", "dock.commit": "提交", "dock.commitPlaceholder": "提交信息…", "dock.blame": "追溯" }
   }), "dsh-file-pane: dictionaries");
   // Passive diff spill: agent edit before/after -> host RAM (per open session).
   ctx.conversationEvents.register(makeDiffSpillDefinition(getSession));
@@ -751,7 +1330,16 @@ function apply(ctx) {
   // space with the conversation, which resizes around it, matching DSH's native
   // look). priority -1 shadows the built-in DetailsPanel (tool details); this
   // accepted trade-off keeps the pane in the same column treatment as DSH.
-  const DockEntry = createDockEntry({ t: ctx.locale.bind(NS), layout, getSession, getCwd });
+  const themeController = createThemeController(theme, {
+    load: () => { try { return globalThis.localStorage?.getItem(THEME_STORAGE_KEY) ?? null; } catch { return null; } },
+    emitter: ctx
+  });
+  // Config default (cordis.patch.yml themePreset) is host-side only — the client
+  // bundle does NOT inject `config`, so reading ctx.config would throw "cannot
+  // get property config without inject". Seed from localStorage (persisted wins);
+  // empty → resolveInitialPreset returns dsh-default (no override).
+  const defaultTheme = resolveInitialPreset(undefined, (() => { try { return globalThis.localStorage?.getItem(THEME_STORAGE_KEY) ?? null; } catch { return null; } })());
+  const DockEntry = createDockEntry({ t: ctx.locale.bind(NS), layout, getSession, getCwd, themeController, defaultTheme });
   slots.inject("details", () =>
     slots.register({ name: "details", priority: -1, locale: NS }, DockEntry)
   );

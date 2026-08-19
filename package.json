@@ -43,7 +43,8 @@
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-theme"
       ]
     }
   },
@@ -54,7 +55,7 @@
     "build:client": "node scripts/build-client.mjs",
     "build:assets": "node scripts/build-pdfjs.mjs",
     "build": "npm run build:client && npm run build:assets",
-    "pretest": "node scripts/build-client.mjs && node scripts/build-pdfjs.mjs",
+    "pretest": "node scripts/build-theme-test.mjs && node scripts/build-client.mjs && node scripts/build-pdfjs.mjs",
     "test": "node --test test/*.test.mjs",
     "check": "node --input-type=module -e \"import('./lib/index.js').then(m=>console.log('plugin ok:',m.name))\"",
     "pack": "npm pack --dry-run",
@@ -82,7 +83,15 @@
     "semantic-release": "^25.0.9"
   },
   "dependencies": {
+    "@shikijs/core": "^1.29.2",
+    "@shikijs/engine-javascript": "^1.29.2",
+    "@shikijs/langs": "^1.29.2",
+    "@shikijs/themes": "^1.29.2",
+    "@vscode/ripgrep": "^1.18.0",
+    "chokidar": "^4.0.3",
+    "diff": "^7.0.0",
     "mammoth": "^1.12.1",
-    "pdfjs-viewer-element": "^3.2.2"
+    "pdfjs-viewer-element": "^3.2.2",
+    "ws": "^8.21.3"
   }
 }

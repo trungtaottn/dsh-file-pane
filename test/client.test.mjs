@@ -74,7 +74,7 @@ test("apply waits for its services via inject (boot-safety regression)", () => {
     else globalThis.window = prev;
   }
   const { apply, inject } = captured.factory(() => ({ createElement: () => null, Fragment: {} }));
-  for (const svc of ["slots", "locale", "connection", "conversationEvents", "sessions", "layout"]) {
+  for (const svc of ["slots", "locale", "connection", "conversationEvents", "sessions", "layout", "theme"]) {
     assert.ok(inject.includes(svc), `plugin must declare service ${svc}`);
   }
 
@@ -95,13 +95,19 @@ test("apply waits for its services via inject (boot-safety regression)", () => {
   const locale = { register: (_ns, _dict) => { calls.locale++; }, bind: () => (() => {}) };
   const conversationEvents = { register: (_def) => { calls.events++; return () => {}; } };
   const sessions = { list: { getSnapshot: () => ({ current: "S1" }) } };
+  const theme = {
+    getTheme: () => ({ active: { colorScheme: "dark" } }),
+    overrideTokens: () => () => {}
+  };
   const ctx = {
     slots,
     locale,
     conversationEvents,
     connection: { isLoopback: false },
     layout: { openDetails() {}, closeDetails() {} },
-    get: (name) => ({ slots, locale, conversationEvents, connection: { isLoopback: false }, sessions, layout: ctx.layout })[name],
+    theme,
+    on: () => () => {}, // theme/change emitter guard used by createThemeController
+    get: (name) => ({ slots, locale, conversationEvents, connection: { isLoopback: false }, sessions, layout: ctx.layout, theme: ctx.theme })[name],
     effect: (cb) => { cb(); return () => {}; }
   };
   apply(ctx);
@@ -157,4 +163,88 @@ test("select runs for remote, declines on loopback", () => {
   // Remote, nothing produced: declines.
   const empty = { turn: { data: new Map([["deliverables", { produced: [] }]]) }, seq: 1 };
   assert.equal(selectProducedPane(false)(empty), null);
+});
+
+test("apply does not read ctx.config (would throw 'without inject' on the real shell)", async () => {
+	// The DSH web shell serves each service via a proxy that THROWS on any
+	// property access not declared in `inject`. Reading ctx.config used to
+	// break plugin boot ("cannot get property config without inject") — this
+	// regression test builds a throwing proxy and asserts apply() still works.
+	let captured = null;
+	const prev = globalThis.window;
+	globalThis.window = { __ModuleLoader__: { load: (spec) => (captured = spec) } };
+	try {
+		const code = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
+		new Function(code)();
+	} finally {
+		if (prev === undefined) delete globalThis.window;
+		else globalThis.window = prev;
+	}
+	const { apply } = captured.factory(() => ({ createElement: () => null, Fragment: {} }));
+	const calls = { inject: 0, register: 0, locale: 0, events: 0 };
+	const slots = { inject: () => { calls.inject++; return () => {}; }, register: () => { calls.register++; return () => {}; } };
+	const locale = { register: () => { calls.locale++; }, bind: () => (() => {}) };
+	const conversationEvents = { register: () => { calls.events++; return () => {}; } };
+	const sessions = { list: { getSnapshot: () => ({ current: "S1" }) } };
+	const theme = { getTheme: () => ({ active: { colorScheme: "dark" } }), overrideTokens: () => () => {} };
+	const allowed = new Set(["slots", "locale", "conversationEvents", "connection", "sessions", "layout", "theme"]);
+	const target = { slots, locale, conversationEvents, connection: { isLoopback: false }, layout: { openDetails() {}, closeDetails() {} }, theme };
+	const ctx = new Proxy(target, {
+		get(t, prop) {
+			if (prop === "get") return (name) => t[name];
+			if (prop === "effect") return (cb) => { cb(); return () => {}; };
+			if (prop === "on") return () => () => {};
+			if (allowed.has(prop)) return t[prop];
+			throw new Error(`cannot get property "${String(prop)}" without inject`);
+		}
+	});
+	apply(ctx); // must NOT throw (no ctx.config access)
+	assert.equal(calls.inject, 3);
+	assert.equal(calls.locale, 1);
+});
+
+test("refreshDirty routes subtree vs git vs iframe from a dirty batch", async () => {
+	let captured = null;
+	const prev = globalThis.window;
+	globalThis.window = { __ModuleLoader__: { load: (spec) => (captured = spec) } };
+	try {
+		const code = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
+		new Function(code)();
+	} finally {
+		if (prev === undefined) delete globalThis.window;
+		else globalThis.window = prev;
+	}
+	const { refreshDirty } = captured.factory(() => ({ createElement: () => null, Fragment: {} }));
+	assert.equal(typeof refreshDirty, "function", "refreshDirty exported from bundle");
+
+	const calls = { list: [], git: [], stamps: 0 };
+	const opts = {
+		workspace: "/ws",
+		viewPath: "/ws/src/app.ts",
+		base: "/ws",
+		fetchListingFn: async (p) => { calls.list.push(p); return []; },
+		fetchGitStatusFn: async (w) => { calls.git.push(w); return { changes: [{ path: "src/app.ts", status: "M" }] }; },
+		setStamp: (fn) => { calls.stamps++; fn(1); },
+		onGitStatus: () => {}
+	};
+	// rel under the view root → subtree fetch; add/change kinds → git status.
+	await refreshDirty({ events: [{ kind: "change", rel: "src/app.ts" }] }, opts);
+	assert.ok(calls.list.length >= 1, "subtree re-list ran for dirty view root");
+	assert.ok(calls.git.length >= 1, "git-status refresh ran for change kind");
+
+	// foreign rel (not under the open file) → no subtree fetch for the file.
+	const calls2 = { list: [], git: [], stamps: 0 };
+	await refreshDirty({ events: [{ kind: "add", rel: "other/file.ts" }] }, {
+		...opts,
+		fetchListingFn: async (p) => { calls2.list.push(p); return []; },
+		fetchGitStatusFn: async () => { calls2.git.push(1); return { changes: [] }; }
+	});
+	assert.equal(calls2.list.length, 0, "foreign rel does not re-list the open file");
+	assert.ok(calls2.git.length >= 1, "add kind still refreshes git status");
+
+	// empty batch → no calls.
+	const calls3 = { list: 0, git: 0 };
+	await refreshDirty({ events: [] }, { ...opts, fetchListingFn: async () => { calls3.list++; }, fetchGitStatusFn: async () => { calls3.git++; } });
+	assert.equal(calls3.list, 0);
+	assert.equal(calls3.git, 0);
 });

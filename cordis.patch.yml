@@ -13,3 +13,38 @@
       config:
         workspaceRoot: !!js process.env.DSH_FILE_PANE_ROOT ?? process.env.HOME
         maxTextBytes: 2097152
+        # Theme preset for the in-app dock (per-feature settings). Accepted ids:
+        # dsh-default | deepseek-blue | nord | codex-warm. A user's
+        # localStorage choice (dsh.filePane.theme) overrides this at runtime.
+        themePreset: dsh-default
+        # Workspace search defaults (per-feature settings). The host is
+        # authoritative: searchMode is enum-clamped (content|name), searchGlobs
+        # is SAFE_GLOB_RE-allowlisted server-side, searchMax is clamped to 1000.
+        searchMode: content
+        searchGlobs: ""
+        searchMax: 200
+        # Syntax-highlight / large-file settings (host-side; the browser bundle
+        # is untouched). Missing keys fall back to these defaults.
+        #   enabledLangs: Shiki grammars to load (subset of the pinned set).
+        #   followEnvTheme: follow DSH light/dark for token colors (default true).
+        #   windowingThreshold: lines at/beyond which data-large engages (100k).
+        #   windowLines: default ?lines= window size.
+        enabledLangs: [] # empty → the pinned 13-language default set
+        followEnvTheme: true
+        windowingThreshold: 100000
+        windowLines: 1000
+        # Gated git write (per-feature settings): local `git commit` is OFF by
+        # default — no commit UI, no reachable write route until the operator
+        # sets gitWriteEnabled: true. historyDepth tunes the commit-history
+        # list (clamped 1..500 server-side).
+        gitWriteEnabled: false
+        historyDepth: 100
+        # Live file-watching (per-feature settings). watchEnabled off → no
+        # /browser/ws watcher (client falls back to poll); watchDebounceMs is
+        # the event-settle window; watchFallbackPollMs is the client poll used
+        # only when WS is unavailable or watching:false (ENOSPC); trustedHosts
+        # extends the WS auth fence beyond loopback (host[:port] entries).
+        watchEnabled: true
+        watchDebounceMs: 150
+        watchFallbackPollMs: 4000
+        trustedHosts: []

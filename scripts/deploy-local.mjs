@@ -18,9 +18,11 @@
  *      the web profile (replacing the dependency), then print a restart hint.
  *   4. If already up to date, print that and touch nothing.
  *
- * We deliberately do NOT auto-restart: restarting `deepseek-harness-web` mid-
+ * We deliberately do NOT auto-restart: restarting the production service mid-
  * session drops the work you have open, so this script stages the install and
- * leaves the restart to you (or to an explicit `--restart` flag).
+ * leaves the restart to you (or to an explicit `--restart` flag). The service
+ * name comes from `DSH_FILE_PANE_SERVICE` (default `dsh-file-pane-web`); the
+ * real service name on the owner's machine is in AGENTS.local.md (gitignored).
  */
 import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -110,11 +112,13 @@ function main() {
 
   installTarball(PROFILE_DIR, tag);
   console.log(`\nStaged beta ${tag} in profile "${PROFILE}".`);
+  // The real systemd service name is machine-specific — see AGENTS.local.md.
+  const SERVICE = process.env.DSH_FILE_PANE_SERVICE || "dsh-file-pane-web";
   if (RESTART) {
-    sh("sudo -n systemctl restart deepseek-harness-web");
-    console.log("Restarted deepseek-harness-web.");
+    sh(`sudo -n systemctl restart ${SERVICE}`);
+    console.log(`Restarted ${SERVICE}.`);
   } else {
-    console.log(`Restart when ready:\n  sudo -n systemctl restart deepseek-harness-web\n(or re-run with --restart to do it now).`);
+    console.log(`Restart when ready:\n  sudo -n systemctl restart ${SERVICE}\n(or re-run with --restart to do it now).`);
   }
 }
 
