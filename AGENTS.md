@@ -178,6 +178,29 @@ dev ───────────────► (merged)
   `slot details` (priority -1); its shadowing trade-off replaces DSH's built-in
   DetailsPanel (tool-details view) — accepted.
 
+## Pre-PR check — never leak internal details (REQUIRED)
+
+This repo is **PUBLIC**. The real hostnames, service names, ports, and machine
+paths of the owner's deployment live only in `AGENTS.local.md` (gitignored).
+Before opening ANY PR (or pushing any commit), verify the committed files do
+not leak internal details:
+
+- Run the leak scanner and fix any hit before committing:
+  ```sh
+  NODE_OPTIONS= node scripts/check-public-leaks.mjs
+  # (patterns come from DSH_FILE_PANE_LEAK_PATTERNS env; on the owner's
+  #  machine set it from AGENTS.local.md, e.g. the real hostname/service/path)
+  ```
+- Never commit values from `AGENTS.local.md` into tracked files: real
+  hostnames (`*.internal`, tunnel domains), systemd service names, ports,
+  `~/…` machine paths, Cloudflare/`*.cloudflareaccess.com` identities, or the
+  owner's username.
+- Placeholders like `<YOUR_DOMAIN>`, `dsh-file-pane-web`, `/home/user`, and
+  `~/Code/…` are the public-safe spellings to use instead.
+- When a doc/comment/script needs a real value to run locally, read it from an
+  environment variable (e.g. `DSH_FILE_PANE_SERVICE`) or from
+  `AGENTS.local.md` — never hardcode it into a committed file.
+
 ## Reports / decisions (in repo, local-only files are gitignored)
 
 - `plans/research/` — research reports (seam, expand, in-app dock).

@@ -60,7 +60,8 @@
     "check": "node --input-type=module -e \"import('./lib/index.js').then(m=>console.log('plugin ok:',m.name))\"",
     "pack": "npm pack --dry-run",
     "release": "semantic-release",
-    "release:dry": "semantic-release --dry-run"
+    "release:dry": "semantic-release --dry-run",
+    "check:leaks": "node scripts/check-public-leaks.mjs"
   },
   "files": [
     "lib",
