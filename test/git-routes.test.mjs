@@ -15,7 +15,7 @@ const { apply } = await import("../lib/index.js");
 
 function makeHandler(config = {}) {
 	let reg;
-	const ctx = { webServer: { register: (x) => (reg = x) }, logger: { info() {} } };
+	const ctx = { webServer: { register: (x) => (reg = x), registerUpgrade: () => () => {} }, logger: { info() {} }, effect: (cb) => { const d = typeof cb === "function" ? cb() : undefined; if (typeof d === "function") { try { d(); } catch {} } return () => {}; } };
 	apply(ctx, { workspaceRoot: ROOT, ...config });
 	return reg.handler;
 }

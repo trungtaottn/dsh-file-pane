@@ -297,6 +297,42 @@ async function fetchListing(path, workspace) {
   } catch { return null; }
 }
 
+/**
+ * Live-watch dirty-signal router (Phase 5). Given a `{type:"dirty", events}`
+ * batch, decides WHICH existing HTTP refetch to run — targeted, never a
+ * full-tree rescan:
+ *   - a dirty rel at/under the current view root → subtree re-list (stamp bump);
+ *   - any add/change/unlink kind → git-status refresh (dirty set changed);
+ *   - the open file's rel dirty → iframe reload via setStamp.
+ * Returns a promise resolving when the chosen refreshes settled. Pure / no
+ * React state — exported so the client-contract tests can stub the fetchers.
+ */
+export async function refreshDirty(batch, { workspace, viewPath, base, fetchListingFn, fetchGitStatusFn, setStamp, onGitStatus }) {
+  const events = Array.isArray(batch?.events) ? batch.events : [];
+  if (events.length === 0) return;
+  const rels = events.map((e) => e?.rel).filter((r) => typeof r === "string" && r.length > 0);
+  const touch = (parent) => {
+    if (!parent) return false;
+    const p = String(parent);
+    return rels.some((r) => r === p || r.startsWith(p + "/"));
+  };
+  const fetchList = fetchListingFn ?? fetchListing;
+  const fetchGit = fetchGitStatusFn ?? fetchGitStatus;
+  const viewRel = stripBase(viewPath, base); // workspace-relative spelling
+  let reloadIframe = false;
+  if (viewRel) reloadIframe = touch(viewRel);
+  if (touch(viewRel || "")) {
+    // subtree re-list: bump stamp (drives FileTree re-fetch + iframe)
+    if (setStamp) setStamp((s) => s + 1);
+    await fetchList(viewPath ?? base, base);
+  }
+  if (events.some((e) => e?.kind === "add" || e?.kind === "change" || e?.kind === "unlink")) {
+    const d = await fetchGit(workspace);
+    if (d && typeof onGitStatus === "function") onGitStatus(d);
+  }
+  if (reloadIframe && setStamp) setStamp((s) => s + 1);
+}
+
 /** Fetch the current branch + local branch list for a workspace. Returns null on error. */
 async function fetchGitBranch(workspace) {
   if (!workspace) return null;
@@ -640,6 +676,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const [commitBusy, setCommitBusy] = useState(false);
   const [blameOn, setBlameOn] = useState(false); // blame gutter on the file view
   const [commitTarget, setCommitTarget] = useState(null); // { sha } → ?gitview=commit src
+  const [watching, setWatching] = useState(true); // live-watch health (false → poll fallback)
 
   // Restore the last docked path/session once (before any user open).
   const seeded = useRef(false);
@@ -733,22 +770,82 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [themeController]);
 
-  // Git changes (source-control style): while the Changes view is open, poll the
-  // workspace's dirty-file set so edits/new files appear without user action.
+  // Git changes (source-control style): while the Changes view is open, keep the
+  // dirty-file set fresh. Live source is the /browser/ws push (Phase 5); the 4s
+  // poll runs ONLY as fallback when WS is unavailable or watching:false (ENOSPC)
+  // — push and poll never run simultaneously.
   useEffect(() => {
     if (!changeView) { setChanged([]); return; }
-    const ws = typeof getCwd === "function" ? getCwd() : undefined;
-    if (!ws) return;
+    const ws2 = typeof getCwd === "function" ? getCwd() : undefined;
+    if (!ws2) return;
     let cancelled = false;
     const load = async () => {
-      const c = await fetchGitStatus(ws);
+      const c = await fetchGitStatus(ws2);
       if (cancelled || !c) return;
       setChanged(Array.isArray(c.changes) ? c.changes.map((e) => ({ path: e.path, status: e.status, staged: !!e.staged })) : []);
     };
-    load();
-    const t = setInterval(load, 4000);
-    return () => { cancelled = true; clearInterval(t); };
-  }, [changeView, getCwd, session, git.current]);
+    const onGitStatus = (d) => {
+      if (cancelled) return;
+      setChanged(Array.isArray(d?.changes) ? d.changes.map((e) => ({ path: e.path, status: e.status, staged: !!e.staged })) : []);
+    };
+    let liveSource = "push"; // "push" | "poll"
+    const poll = () => {
+      liveSource = "poll";
+      load();
+      const t = setInterval(load, watchFallbackMs);
+      return () => clearInterval(t);
+    };
+    const startPoll = () => { if (liveSource !== "poll") pollCleanup = poll(); };
+    let pollCleanup = null;
+    // WS stub: connect with exponential backoff clamped to 1–30s.
+    let sock = null, retry = 0, reconnectTimer = null;
+    const connect = () => {
+      if (cancelled || sock) return;
+      try {
+        const proto = (globalThis.location?.protocol === "https:") ? "wss:" : "ws:";
+        sock = new WebSocket(proto + "//" + globalThis.location.host + "/browser/ws");
+      } catch { startPoll(); return; }
+      sock.onopen = () => { retry = 0; };
+      sock.onmessage = (ev) => {
+        let frame;
+        try { frame = JSON.parse(ev.data); } catch { return; }
+        if (frame?.type === "status") {
+          if (frame.watching === false) { setWatching(false); startPoll(); }
+          else { setWatching(true); if (liveSource === "poll" && pollCleanup) { pollCleanup(); pollCleanup = null; liveSource = "push"; } }
+          return;
+        }
+        if (frame?.type === "dirty" && frame.workspace === ws2) {
+          refreshDirty(frame, {
+            workspace: ws2,
+            viewPath: path,
+            base: ws2,
+            setStamp,
+            onGitStatus
+          });
+        }
+      };
+      sock.onclose = () => {
+        sock = null;
+        if (cancelled) return;
+        const delay = Math.min(1000 * Math.pow(2, retry), 30000);
+        retry++;
+        if (retry > 3) startPoll(); // WS unavailable after a few retries → poll
+        reconnectTimer = setTimeout(connect, delay);
+      };
+      sock.onerror = () => { try { sock?.close(); } catch {} };
+    };
+    connect();
+    // Fallback when the host signals watching:false (ENOSPC) — arm poll now.
+    if (watching === false) { pollCleanup = poll(); }
+    load(); // initial status load regardless
+    return () => {
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try { sock?.close(); } catch {}
+      if (pollCleanup) pollCleanup();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [changeView, getCwd, session, git.current, stamp]);
 
   if (!open) return null;
 
@@ -757,6 +854,8 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   // The file tree + Home root here instead of the host root ($HOME) so the dock
   // shows only the active workspace, not the whole hosting machine.
   const base = typeof getCwd === "function" ? getCwd() : undefined;
+  // Fallback poll interval (Phase 5): from DSH settings when surfaced, else 4000.
+  const watchFallbackMs = 4000;
   const viewPath = path ?? base; // undefined path → the workspace root listing
   const src = commitTarget
     ? dockSrc(viewPath, { workspace: base, gitview: "commit", sha: commitTarget.sha })

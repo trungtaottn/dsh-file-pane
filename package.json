@@ -88,8 +88,10 @@
     "@shikijs/langs": "^1.29.2",
     "@shikijs/themes": "^1.29.2",
     "@vscode/ripgrep": "^1.18.0",
+    "chokidar": "^4.0.3",
     "diff": "^7.0.0",
     "mammoth": "^1.12.1",
-    "pdfjs-viewer-element": "^3.2.2"
+    "pdfjs-viewer-element": "^3.2.2",
+    "ws": "^8.21.3"
   }
 }

@@ -12,7 +12,7 @@ import { apply as applyHost } from "../lib/index.js";
 
 function makeHandler(root, config = {}) {
 	let reg;
-	const ctx = { webServer: { register: (x) => (reg = x) }, logger: { info() {} } };
+	const ctx = { webServer: { register: (x) => (reg = x), registerUpgrade: () => () => {} }, logger: { info() {} }, effect: (cb) => { const d = typeof cb === "function" ? cb() : undefined; if (typeof d === "function") { try { d(); } catch {} } return () => {}; } };
 	applyHost(ctx, { workspaceRoot: root, ...config });
 	return reg.handler;
 }
@@ -189,7 +189,7 @@ test("readFileResult classifies .docx as kind docx", async () => {
 
 test("apply falls back to process.env.HOME when no workspaceRoot config is given", async () => {
 	let captured;
-	const ctx = { webServer: { register: (x) => (captured = x) }, logger: { info() {} } };
+	const ctx = { webServer: { register: (x) => (captured = x), registerUpgrade: () => () => {} }, logger: { info() {} }, effect: (cb) => { const d = typeof cb === "function" ? cb() : undefined; if (typeof d === "function") { try { d(); } catch {} } return () => {}; } };
 	applyHost(ctx, {});
 	assert.ok(captured, "route registered");
 	// The handler must resolve files under $HOME (the default root).
@@ -204,7 +204,7 @@ test("apply uses config.workspaceRoot over process.env.HOME", async () => {
 	const dir = await fs.mkdtemp(path.join(tmpdir(), "pane-cfg-"));
 	await fs.writeFile(path.join(dir, "x.md"), "cfg-root");
 	let captured;
-	const ctx = { webServer: { register: (x) => (captured = x) }, logger: { info() {} } };
+	const ctx = { webServer: { register: (x) => (captured = x), registerUpgrade: () => () => {} }, logger: { info() {} }, effect: (cb) => { const d = typeof cb === "function" ? cb() : undefined; if (typeof d === "function") { try { d(); } catch {} } return () => {}; } };
 	applyHost(ctx, { workspaceRoot: dir });
 	const r = await request(captured.handler, "/browser/?path=x.md");
 	assert.equal(r.code, 200);

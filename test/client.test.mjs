@@ -202,3 +202,49 @@ test("apply does not read ctx.config (would throw 'without inject' on the real s
 	assert.equal(calls.inject, 3);
 	assert.equal(calls.locale, 1);
 });
+
+test("refreshDirty routes subtree vs git vs iframe from a dirty batch", async () => {
+	let captured = null;
+	const prev = globalThis.window;
+	globalThis.window = { __ModuleLoader__: { load: (spec) => (captured = spec) } };
+	try {
+		const code = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
+		new Function(code)();
+	} finally {
+		if (prev === undefined) delete globalThis.window;
+		else globalThis.window = prev;
+	}
+	const { refreshDirty } = captured.factory(() => ({ createElement: () => null, Fragment: {} }));
+	assert.equal(typeof refreshDirty, "function", "refreshDirty exported from bundle");
+
+	const calls = { list: [], git: [], stamps: 0 };
+	const opts = {
+		workspace: "/ws",
+		viewPath: "/ws/src/app.ts",
+		base: "/ws",
+		fetchListingFn: async (p) => { calls.list.push(p); return []; },
+		fetchGitStatusFn: async (w) => { calls.git.push(w); return { changes: [{ path: "src/app.ts", status: "M" }] }; },
+		setStamp: (fn) => { calls.stamps++; fn(1); },
+		onGitStatus: () => {}
+	};
+	// rel under the view root → subtree fetch; add/change kinds → git status.
+	await refreshDirty({ events: [{ kind: "change", rel: "src/app.ts" }] }, opts);
+	assert.ok(calls.list.length >= 1, "subtree re-list ran for dirty view root");
+	assert.ok(calls.git.length >= 1, "git-status refresh ran for change kind");
+
+	// foreign rel (not under the open file) → no subtree fetch for the file.
+	const calls2 = { list: [], git: [], stamps: 0 };
+	await refreshDirty({ events: [{ kind: "add", rel: "other/file.ts" }] }, {
+		...opts,
+		fetchListingFn: async (p) => { calls2.list.push(p); return []; },
+		fetchGitStatusFn: async () => { calls2.git.push(1); return { changes: [] }; }
+	});
+	assert.equal(calls2.list.length, 0, "foreign rel does not re-list the open file");
+	assert.ok(calls2.git.length >= 1, "add kind still refreshes git status");
+
+	// empty batch → no calls.
+	const calls3 = { list: 0, git: 0 };
+	await refreshDirty({ events: [] }, { ...opts, fetchListingFn: async () => { calls3.list++; }, fetchGitStatusFn: async () => { calls3.git++; } });
+	assert.equal(calls3.list, 0);
+	assert.equal(calls3.git, 0);
+});

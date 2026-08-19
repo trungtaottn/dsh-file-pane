@@ -10,7 +10,7 @@ import { apply as applyHost } from "../lib/index.js";
 
 function makeHandler(root) {
 	let reg;
-	const ctx = { webServer: { register: (x) => (reg = x) }, logger: { info() {} } };
+	const ctx = { webServer: { register: (x) => (reg = x), registerUpgrade: () => () => {} }, logger: { info() {} }, effect: (cb) => { const d = typeof cb === "function" ? cb() : undefined; if (typeof d === "function") { try { d(); } catch {} } return () => {}; } };
 	applyHost(ctx, { workspaceRoot: root });
 	return reg.handler;
 }

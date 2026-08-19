@@ -100,7 +100,7 @@ const { apply: applyPlugin } = await import("../lib/index.js");
 
 function makeHandler(root) {
 	let reg;
-	const ctx = { webServer: { register: (x) => (reg = x) }, logger: { info() {} } };
+	const ctx = { webServer: { register: (x) => (reg = x), registerUpgrade: () => () => {} }, logger: { info() {} }, effect: (cb) => { const d = typeof cb === "function" ? cb() : undefined; if (typeof d === "function") { try { d(); } catch {} } return () => {}; } };
 	applyPlugin(ctx, { workspaceRoot: root, searchMax: 200, searchMode: "content" });
 	return reg.handler;
 }

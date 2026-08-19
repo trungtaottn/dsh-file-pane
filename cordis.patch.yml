@@ -39,3 +39,12 @@
         # list (clamped 1..500 server-side).
         gitWriteEnabled: false
         historyDepth: 100
+        # Live file-watching (per-feature settings). watchEnabled off → no
+        # /browser/ws watcher (client falls back to poll); watchDebounceMs is
+        # the event-settle window; watchFallbackPollMs is the client poll used
+        # only when WS is unavailable or watching:false (ENOSPC); trustedHosts
+        # extends the WS auth fence beyond loopback (host[:port] entries).
+        watchEnabled: true
+        watchDebounceMs: 150
+        watchFallbackPollMs: 4000
+        trustedHosts: []
