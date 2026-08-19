@@ -164,3 +164,41 @@ test("select runs for remote, declines on loopback", () => {
   const empty = { turn: { data: new Map([["deliverables", { produced: [] }]]) }, seq: 1 };
   assert.equal(selectProducedPane(false)(empty), null);
 });
+
+test("apply does not read ctx.config (would throw 'without inject' on the real shell)", async () => {
+	// The DSH web shell serves each service via a proxy that THROWS on any
+	// property access not declared in `inject`. Reading ctx.config used to
+	// break plugin boot ("cannot get property config without inject") — this
+	// regression test builds a throwing proxy and asserts apply() still works.
+	let captured = null;
+	const prev = globalThis.window;
+	globalThis.window = { __ModuleLoader__: { load: (spec) => (captured = spec) } };
+	try {
+		const code = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
+		new Function(code)();
+	} finally {
+		if (prev === undefined) delete globalThis.window;
+		else globalThis.window = prev;
+	}
+	const { apply } = captured.factory(() => ({ createElement: () => null, Fragment: {} }));
+	const calls = { inject: 0, register: 0, locale: 0, events: 0 };
+	const slots = { inject: () => { calls.inject++; return () => {}; }, register: () => { calls.register++; return () => {}; } };
+	const locale = { register: () => { calls.locale++; }, bind: () => (() => {}) };
+	const conversationEvents = { register: () => { calls.events++; return () => {}; } };
+	const sessions = { list: { getSnapshot: () => ({ current: "S1" }) } };
+	const theme = { getTheme: () => ({ active: { colorScheme: "dark" } }), overrideTokens: () => () => {} };
+	const allowed = new Set(["slots", "locale", "conversationEvents", "connection", "sessions", "layout", "theme"]);
+	const target = { slots, locale, conversationEvents, connection: { isLoopback: false }, layout: { openDetails() {}, closeDetails() {} }, theme };
+	const ctx = new Proxy(target, {
+		get(t, prop) {
+			if (prop === "get") return (name) => t[name];
+			if (prop === "effect") return (cb) => { cb(); return () => {}; };
+			if (prop === "on") return () => () => {};
+			if (allowed.has(prop)) return t[prop];
+			throw new Error(`cannot get property "${String(prop)}" without inject`);
+		}
+	});
+	apply(ctx); // must NOT throw (no ctx.config access)
+	assert.equal(calls.inject, 3);
+	assert.equal(calls.locale, 1);
+});

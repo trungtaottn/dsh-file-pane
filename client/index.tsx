@@ -910,9 +910,11 @@ function apply(ctx) {
     load: () => { try { return globalThis.localStorage?.getItem(THEME_STORAGE_KEY) ?? null; } catch { return null; } },
     emitter: ctx
   });
-  // Config default (cordis.patch.yml themePreset) is the fallback seed; a
-  // persisted localStorage choice wins at runtime.
-  const defaultTheme = resolveInitialPreset(ctx.config?.themePreset, (() => { try { return globalThis.localStorage?.getItem(THEME_STORAGE_KEY) ?? null; } catch { return null; } })());
+  // Config default (cordis.patch.yml themePreset) is host-side only — the client
+  // bundle does NOT inject `config`, so reading ctx.config would throw "cannot
+  // get property config without inject". Seed from localStorage (persisted wins);
+  // empty → resolveInitialPreset returns dsh-default (no override).
+  const defaultTheme = resolveInitialPreset(undefined, (() => { try { return globalThis.localStorage?.getItem(THEME_STORAGE_KEY) ?? null; } catch { return null; } })());
   const DockEntry = createDockEntry({ t: ctx.locale.bind(NS), layout, getSession, getCwd, themeController, defaultTheme });
   slots.inject("details", () =>
     slots.register({ name: "details", priority: -1, locale: NS }, DockEntry)
