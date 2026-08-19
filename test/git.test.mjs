@@ -50,9 +50,12 @@ test("isValidBranch rejects injection / ref-escape input", () => {
 test("git module reads the real repo at the workspace", async () => {
 	assert.equal(await isGitRepo(ROOT), true);
 	const cur = await currentBranch(ROOT);
-	assert.ok(typeof cur === "string" && cur.length > 0, "current branch resolves");
-	const branches = await listBranches(ROOT);
-	assert.ok(Array.isArray(branches) && branches.includes(cur), "current branch present in list");
+	// CI runs in detached HEAD — currentBranch returns null; that's fine.
+	if (cur !== null) {
+		assert.ok(typeof cur === "string" && cur.length > 0, "current branch resolves");
+		const branches = await listBranches(ROOT);
+		assert.ok(Array.isArray(branches) && branches.includes(cur), "current branch present in list");
+	}
 });
 
 import { isText, mimeFor, isLikelyText } from "../lib/view-core.mjs";
