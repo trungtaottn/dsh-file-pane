@@ -11,7 +11,7 @@
 # straight from the release:
 #
 #   dsh plugin --profile web add <release tarball URL>
-#   sudo systemctl restart deepseek-harness-web
+#   sudo systemctl restart dsh-file-pane-web
 
 name: Release
 

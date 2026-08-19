@@ -39,7 +39,7 @@ navigate straight into that view when you're remote.
 dsh plugin --profile web add /path/to/dsh-file-pane
 systemctl --user daemon-reload 2>/dev/null; :
 # restart the web service to load the new bundle + route
-sudo systemctl restart deepseek-harness-web
+sudo systemctl restart dsh-file-pane-web
 ```
 
 Default workspace root is `$HOME`. Override it with the `DSH_FILE_PANE_ROOT`
@@ -58,7 +58,7 @@ the row's `config.workspaceRoot` in a later patch overlay (which wins):
 
 ```sh
 # example: serve a different workspace without editing any file
-DSH_FILE_PANE_ROOT=/srv/projects systemctl restart deepseek-harness-web
+DSH_FILE_PANE_ROOT=/srv/projects systemctl restart dsh-file-pane-web
 ```
 
 ## Usage
@@ -76,7 +76,7 @@ On your remote device's browser, open (host = your DSH web origin):
 ```
 
 Paths may be workspace-relative **or** absolute-under-root
-(`/browser/?path=/home/kaynt/src/app.ts` works) — the pane normalizes any
+(`/browser/?path=/home/user/src/app.ts` works) — the pane normalizes any
 absolute path inside its configured root, so file chips opened from sessions
 whose cwd is a subdirectory resolve to the right file.
 

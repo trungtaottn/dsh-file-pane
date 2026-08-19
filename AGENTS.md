@@ -4,6 +4,11 @@ Agent context for DeepSeek Harness (DSH) plugin development on this repo.
 Read this first. It is the source of truth for conventions, environment facts,
 and the Git/release workflow.
 
+> **Local-only deployment details** (real hostnames, ports, service names,
+> machine paths) live in `AGENTS.local.md`, which is gitignored. If you are
+> working on this repo on the owner's machine, read `AGENTS.local.md` too —
+> it overrides the `<PLACEHOLDER>` values below with the real environment.
+
 ## What this project is
 
 `dsh-file-pane` — a DeepSeek Harness (DSH) plugin that adds a read-only remote
@@ -28,28 +33,29 @@ Two halves of one cordis plugin (like dsh-better-sidebar-lite):
   NODE_OPTIONS= npm run build:client
   NODE_OPTIONS= dsh --profile web --dump-config
   ```
-- **Production service:** systemd `deepseek-harness-web`, port 3080. Remote access
-  via Cloudflare `harness.nes.codes` → loopback proxy :3081 → DSH :3080. Live
-  only for verify; test changes in a sandbox profile (:3090) first.
+- **Production service:** the production profile runs as a systemd service
+  (name, port, remote-access hostname, and Cloudflare tunnel details are in
+  `AGENTS.local.md`). Live only for verify; test changes on a sandbox profile
+  first (see the testing rule below).
 - `web_search` WORKS (has key) — research online is fine.
 
 ## Testing rule (IMPORTANT)
 
 - **Always test on a SANDBOX profile, NEVER on production.** Production is the
-  live systemd service `deepseek-harness-web` on port 3080 — never restart it,
-  never install/verify experimental builds against it, and never point dev
-  builds at it.
+  live systemd service (see `AGENTS.local.md` for the real name/port) — never
+  restart it, never install/verify experimental builds against it, and never
+  point dev builds at it.
 - Sandbox loop: build locally → run unit tests (`NODE_OPTIONS= npm test`) →
-  boot a separate sandbox profile on its own port (e.g. :3090) → verify there →
-  only then open a PR. See `HANDOFF-next-session.md` for the sandbox profile
-  recipe.
-- If you must sanity-check the served bundle, verify content/auth on the sandbox
-  port, and compare bundle hashes locally — do not mutate production.
+  boot a separate sandbox profile on its own port (e.g. `:3090`) → verify
+  there → only then open a PR. See `HANDOFF-next-session.md` for the sandbox
+  profile recipe.
+- If you must sanity-check the served bundle, verify content/auth on the
+  sandbox port, and compare bundle hashes locally — do not mutate production.
 
 ## Commands (dev loop)
 
 ```sh
-NODE_OPTIONS= npm test               # 38 tests: smoke + client contract + diff + expand (env/abs/docx/pdfjs)
+NODE_OPTIONS= npm test               # full suite (see test/ for count)
 NODE_OPTIONS= npm run build          # build:client (esbuild) + build:assets (pdfjs-viewer-element)
 NODE_OPTIONS= npm run build:client   # client/index.tsx → lib/client.js (lib/client.js MUST be committed)
 NODE_OPTIONS= npm run build:assets   # copy node_modules/pdfjs-viewer-element/dist → assets/pdfjs
@@ -60,19 +66,20 @@ NODE_OPTIONS= npm run check          # import lib/index.js sanity
 ## Local deployment & preview (IMPORTANT — two separate DSH surfaces)
 
 The local machine runs **two independent DSH profiles on different ports** so
-development never disturbs production:
+development never disturbs production (exact ports/service names are in
+`AGENTS.local.md`):
 
-| Profile | Port | Runs | Source |
-|---|---|---|---|
-| **`web`** (production, service `deepseek-harness-web`) | **3080** | **beta release from GitHub** | pinned tarball, NOT the workspace |
-| **`preview`** | **3091** | the current workspace branch | `link:` → workspace |
+| Profile | Runs | Source |
+|---|---|---|
+| **`web`** (production) | **beta release from GitHub** | pinned tarball, NOT the workspace |
+| **`preview`** | the current workspace branch | `link:` → workspace |
 
 - The `web` profile installs the plugin from a **packed tarball release URL**
   (see `scripts/deploy-local.mjs`), so `git checkout` in the workspace NEVER
   changes what production serves. `web` only updates when you run the deploy
   script (or install a newer beta tarball) + restart.
 - The `preview` profile `link:`s the plugin to THIS workspace, so whatever
-  branch is checked out is exactly what :3091 serves.
+  branch is checked out is exactly what the preview port serves.
 
 **Update production to the latest beta release:**
 ```sh
@@ -82,10 +89,10 @@ node scripts/deploy-local.mjs --restart  # check + install + restart web
 
 **Preview the feature branch you are developing (does NOT touch web):**
 ```sh
-cd /home/kaynt/Code/dsh-file-pane
+cd ~/Code/dsh-file-pane                 # adjust to your checkout path
 git checkout <feature-branch>     # workspace now on the feature
-node scripts/preview-branch.mjs   # boots :3091 from the workspace
-# open http://127.0.0.1:3091 to inspect; production :3080 is untouched
+node scripts/preview-branch.mjs   # boots the preview profile from the workspace
+# open the preview URL printed by the script; production is untouched
 node scripts/preview-branch.mjs --stop   # shut it down
 ```
 
@@ -96,12 +103,19 @@ lib/index.js         host: /browser route + spill API + vendor pdfjs assets
 lib/view-core.mjs    security core (resolveWithin abs→rel) + diffSides + renderMarkdown (XSS-safe)
 lib/view-html.mjs    renderers: dir/list + file (md/docx/pdf) + diff; ?embed=1 strips chrome
 lib/docx.mjs         host-side .docx → safe markdown (mammoth)
+lib/git.mjs          read-mostly git façades (branch/status/log/blame/gated commit)
+lib/search.mjs       ripgrep workspace search engine (NDJSON stream)
+lib/highlight.mjs    host-side Shiki syntax highlighting (pure-JS engine)
+lib/watch.mjs        chokidar workspace watcher (live file watching)
+lib/ws-server.mjs    /browser/ws downlink-only WebSocket (auth-fenced)
 lib/client.js        pre-built client-plugin bundle (committed; DSH serves it)
 client/index.tsx     client-plugin: produced chips + diff spill + dock
+client/theme-*.ts    theme presets + controller (dock theme switcher)
+client/search-text.ts pure XSS-safe snippet helpers (search results)
 scripts/build-client.mjs  esbuild → __ModuleLoader__.load wire format
 scripts/build-pdfjs.mjs   pdfjs-viewer-element dist → assets/pdfjs
 assets/pdfjs/        served at /browser/vendor/pdfjs/* (basename+resolve guard)
-cordis.patch.yml     workspaceRoot via env DSH_FILE_PANE_ROOT
+cordis.patch.yml     plugin config (workspaceRoot, per-feature settings, …)
 release.config.mjs   semantic-release, GitHub-only (npmPublish:false)
 ```
 
@@ -141,7 +155,7 @@ release.config.mjs   semantic-release, GitHub-only (npmPublish:false)
 Both `main` and `dev` require: 1 approving PR review + status checks (CI pass),
 no force-push, no deletion. Every change lands via a reviewed PR.
 
-### Banch chain example
+### Branch chain example
 ```
 dev ───────────────► (merged)
  │
@@ -164,9 +178,11 @@ dev ───────────────► (merged)
   `slot details` (priority -1); its shadowing trade-off replaces DSH's built-in
   DetailsPanel (tool-details view) — accepted.
 
-## Reports / decisions (in repo, local-only HANDOFF is gitignored)
+## Reports / decisions (in repo, local-only files are gitignored)
 
 - `plans/research/` — research reports (seam, expand, in-app dock).
 - `plans/reports/` — brainstorm contracts + xia comparisons.
 - `HANDOFF-next-session.md` — local session handoff, **never committed**
   (gitignored).
+- `AGENTS.local.md` — real deployment details (hostnames, ports, service
+  names, machine paths), **never committed** (gitignored).

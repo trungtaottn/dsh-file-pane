@@ -9,7 +9,7 @@
   <rect x="0" y="0" width="960" height="46" fill="#191d26"/>
   <rect x="0" y="46" width="960" height="1" fill="#262c3a"/>
   <text x="18" y="29" fill="#e6e9f0" font-size="14" font-weight="600">📁 dsh-file-pane</text>
-  <text x="150" y="29" fill="#9aa3b5" font-size="12">workspace root: /home/kaynt</text>
+  <text x="150" y="29" fill="#9aa3b5" font-size="12">workspace root: /home/user</text>
   <text x="880" y="29" fill="#4f8cff" font-size="12">Home</text>
   <!-- rail -->
   <rect x="0" y="47" width="285" height="493" fill="#161a23"/>

@@ -8,7 +8,7 @@
  *
  * Usage:
  *   # workspace is already on the feature branch you want to see
- *   cd /home/kaynt/Code/dsh-file-pane
+ *   cd ~/Code/dsh-file-pane                # adjust to your checkout path
  *   git checkout feat/my-feature        # switch workspace to the feature
  *   node scripts/preview-branch.mjs     # boot :3091 from the workspace
  *

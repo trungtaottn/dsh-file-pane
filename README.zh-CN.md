@@ -27,7 +27,7 @@
 # 在你的 profile 中
 dsh plugin --profile web add /path/to/dsh-file-pane
 # 重启 Web 服务以加载新的 bundle 与路由
-sudo systemctl restart deepseek-harness-web
+sudo systemctl restart dsh-file-pane-web
 ```
 
 默认 workspace 根目录为 `$HOME`。可通过 `DSH_FILE_PANE_ROOT` 环境变量覆盖
@@ -46,7 +46,7 @@ sudo systemctl restart deepseek-harness-web
 
 ```sh
 # 示例：不改任何文件即可切换 workspace
-DSH_FILE_PANE_ROOT=/srv/projects systemctl restart deepseek-harness-web
+DSH_FILE_PANE_ROOT=/srv/projects systemctl restart dsh-file-pane-web
 ```
 
 ## 使用
@@ -64,7 +64,7 @@ DSH_FILE_PANE_ROOT=/srv/projects systemctl restart deepseek-harness-web
 ```
 
 路径可以是 workspace 相对路径**或**根目录内的绝对路径
-（`/browser/?path=/home/kaynt/src/app.ts` 同样可用）——面板会把根目录内的任意绝对路径
+（`/browser/?path=/home/user/src/app.ts` 同样可用）——面板会把根目录内的任意绝对路径
 归一化，因此从 cwd 为子目录的 session 打开的文件 chip 也能解析到正确文件。
 
 ## 版本 diff（前 → 后）

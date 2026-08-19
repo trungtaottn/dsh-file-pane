@@ -9,3 +9,6 @@ plans/
 
 # generated theme test bundle (rebuilt by pretest)
 test/theme-dist/
+
+# local-only agent context — never commit (real hostnames/ports/paths)
+AGENTS.local.md
