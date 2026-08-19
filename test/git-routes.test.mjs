@@ -106,3 +106,30 @@ test("branch/status responses expose write flag", async () => {
 	const r2 = await request(h, `/browser/api/git/status?workspace=${W}`);
 	assert.equal(JSON.parse(r2.body).write, false);
 });
+test("POST routes reject cross-site Origin (CSRF defense-in-depth)", async () => {
+	const h = makeHandler();
+	const W = encodeURIComponent(ROOT);
+	// checkout with evil Origin → 403
+	const evil = { method: "POST", url: `/browser/api/git/checkout?workspace=${W}&branch=main`, headers: { origin: "https://evil.example.com", host: `127.0.0.1:3080` }, on: () => {} };
+	const r = await h(evil, { writeHead(c) { this.code = c; }, write() {}, end() {}, code: null });
+	// capture code via wrapper
+	const code = await new Promise((resolve) => {
+		const res = { code: null, writeHead(c) { res.code = c; }, write() {}, end() {} };
+		h(evil, res).then(() => resolve(res.code));
+	});
+	assert.equal(code, 403, "cross-site checkout refused");
+	// same-origin Origin → allowed through (not 403; reaches git path)
+	const same = { method: "POST", url: `/browser/api/git/checkout?workspace=${W}&branch=main`, headers: { origin: "http://127.0.0.1:3080", host: "127.0.0.1:3080" }, on: () => {} };
+	const code2 = await new Promise((resolve) => {
+		const res = { code: null, writeHead(c) { res.code = c; }, write() {}, end() {} };
+		h(same, res).then(() => resolve(res.code));
+	});
+	assert.notEqual(code2, 403, "same-origin checkout not blocked by CSRF guard");
+	// no Origin (curl) → allowed through
+	const noOrigin = { method: "POST", url: `/browser/api/git/checkout?workspace=${W}&branch=main`, on: () => {} };
+	const code3 = await new Promise((resolve) => {
+		const res = { code: null, writeHead(c) { res.code = c; }, write() {}, end() {} };
+		h(noOrigin, res).then(() => resolve(res.code));
+	});
+	assert.notEqual(code3, 403, "curl-style POST without Origin not blocked");
+});
