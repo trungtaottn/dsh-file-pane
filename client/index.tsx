@@ -27,6 +27,8 @@
 // Bundled platform constants (no cross-plugin value imports; kept local).
 import * as React from "react";
 import { useState, useEffect, useRef, useCallback } from "react";
+import { createThemeController, resolveInitialPreset } from "./theme-controller";
+import { presetIds } from "./theme-presets";
 
 const LOADER_ID = "dsh-file-pane";
 export const name = LOADER_ID;
@@ -36,6 +38,8 @@ const NS = "dsh-file-pane";
 const DOCK_OPEN_EVENT = "dsh-file-pane:open";
 /** Persisted dock open/closed preference key. */
 const DOCK_STORAGE_KEY = "dsh.filePane.dock";
+/** Persisted theme preset choice key (survives reload; mirrors DOCK_STORAGE_KEY). */
+const THEME_STORAGE_KEY = "dsh.filePane.theme";
 /** Live mount flag: set by the dock while it is mounted (session-scoped). */
 let dockMounted = false;
 function isDockMounted() { return dockMounted; }
@@ -51,7 +55,7 @@ function isDockMounted() { return dockMounted; }
  * it makes `ctx.layout` undefined and the dock silently abdicates, so apply
  * throws loudly instead (same discipline as dsh-better-sidebar-lite).
  */
-export const inject = ["slots", "locale", "connection", "conversationEvents", "sessions", "layout"];
+export const inject = ["slots", "locale", "connection", "conversationEvents", "sessions", "layout", "theme"];
 
 /** Trailing segment of a slash-or-backslash path. */
 function basename(p) {
@@ -409,7 +413,32 @@ function Breadcrumb({ path, onNavigate }) {
  * native DSH look. Contains a workspace-rooted file tree, breadcrumb nav, diff,
  * and the session changed-files list.
  */
-function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces, layout, getSession, getCwd }) {
+function ThemePicker({ t, value, onChange }) {
+  const ids = presetIds();
+  return (
+    <select
+      className="dshfp-theme-picker"
+      value={value ?? ""}
+      onChange={(e) => onChange(e.target.value)}
+      title={t?.("dock.theme") ?? "Theme"}
+      aria-label={t?.("dock.theme") ?? "Theme"}
+    >
+      {ids.map((id) => (
+        <option key={id} value={id}>
+          {id === "dsh-default" ? (t?.("dock.themeDefault") ?? "DSH default") : id}
+        </option>
+      ))}
+      <style>{`
+        .dshfp-theme-picker{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06));color:var(--dsw-alias-label-secondary,#c7ccd9);
+          border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));border-radius:5px;font:inherit;font-size:12px;max-width:118px;
+          padding:1px 4px;cursor:pointer}
+        .dshfp-theme-picker:hover{border-color:var(--dsw-alias-border-l3,rgba(255,255,255,.2));color:var(--dsw-alias-label-primary,#eef1f8)}
+      `}</style>
+    </select>
+  );
+}
+
+function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces, layout, getSession, getCwd, themeController, defaultTheme }) {
   const rootRef = useRef(null);
   const [path, setPath] = useState(undefined); // undefined → root listing
   const [session, setSession] = useState(undefined);
@@ -423,6 +452,9 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const [changed, setChanged] = useState([]);
   const [git, setGit] = useState({ git: false, current: null, branches: [] }); // branch state for the status bar
   const [branchOpen, setBranchOpen] = useState(false); // branch switcher dropdown
+  const [themeId, setThemeId] = useState(() => {
+    try { return globalThis.localStorage?.getItem(THEME_STORAGE_KEY) ?? ""; } catch { return ""; }
+  });
   const [gitErr, setGitErr] = useState(null);
 
   // Restore the last docked path/session once (before any user open).
@@ -486,6 +518,26 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
     });
     return () => { cancelled = true; };
   }, [getCwd, session, getSession]);
+
+  // Theme preset: on mount apply the persisted/config choice; on change apply +
+  // persist. `themeId === ""` means no override (DSH default applied by clear).
+  useEffect(() => {
+    if (!themeController) return;
+    if (!themeId) { themeController.clear(); return; }
+    themeController.apply(themeId);
+    try { globalThis.localStorage?.setItem(THEME_STORAGE_KEY, themeId); } catch { /* ignore */ }
+  }, [themeId, themeController]);
+
+  // First-mount: reconcile the persisted choice against the config seed.
+  useEffect(() => {
+    if (!themeController) return;
+    let saved = "";
+    try { saved = globalThis.localStorage?.getItem(THEME_STORAGE_KEY) ?? ""; } catch { /* ignore */ }
+    const id = saved || defaultTheme || "";
+    if (id) setThemeId(id); else themeController.clear();
+    return () => themeController.dispose?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [themeController]);
 
   // Git changes (source-control style): while the Changes view is open, poll the
   // workspace's dirty-file set so edits/new files appear without user action.
@@ -628,6 +680,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         <button type="button" title={t?.("dock.reload") ?? "Reload"} onClick={() => setStamp((s) => s + 1)}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 3.5V7h-3.5"/><path d="M3 12.5V9h3.5"/><path d="M13 7a5 5 0 0 0-8.5-3.5L3 5M13 9l-1.5 1.5A5 5 0 0 1 3 7"/></svg>
         </button>
+        <ThemePicker t={t} value={themeId || "dsh-default"} onChange={(id) => setThemeId(id)} />
         <Breadcrumb path={relC} onNavigate={(rel) => { navDir(navClose(rel)); }} />
         <button type="button" title={t?.("dock.diff") ?? "Version diff"} data-on={diff && isTextPath(path) || undefined} disabled={!isTextPath(path) || path === undefined} onClick={() => setDiff((v) => !v)}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h4M4 8h4M4 12h4"/><path d="M12 3.5v9"/><path d="M10.5 5.5 12 4l1.5 1.5M10.5 10.5 12 12l1.5-1.5"/></svg>
@@ -730,6 +783,8 @@ function createDockEntry(services) {
       layout={services.layout}
       getSession={services.getSession}
       getCwd={services.getCwd}
+      themeController={services.themeController}
+      defaultTheme={services.defaultTheme}
     />
   );
 }
@@ -796,6 +851,12 @@ function apply(ctx) {
   if (layout === undefined) {
     throw new Error("dsh-file-pane: ctx.layout missing — add 'layout' to the bundle-exported inject list in client/index.tsx");
   }
+  // Theme runtime (ThemeRuntime from dsh-client-ui-theme). Required like layout —
+  // the theme picker rides it; a missing service fails boot loudly.
+  const theme = ctx.get("theme");
+  if (theme === undefined) {
+    throw new Error("dsh-file-pane: ctx.theme missing — add 'theme' to the bundle-exported inject list in client/index.tsx and @deepseek-ai/dsh-client-ui-theme to dsh.client.inject in package.json");
+  }
   // Connection classification is stable per page loads (URL hostname), so read
   // it once and close over the same value for both selector and inject.
   const isLoopback = connection.isLoopback === true;
@@ -824,8 +885,8 @@ function apply(ctx) {
   };
   const resolvePath = (rel) => resolvePanePath(getCwd(), rel);
   ctx.effect(() => ctx.locale.register(NS, {
-    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.tree": "File tree", "dock.files": "Files", "dock.git": "Git / Changes", "dock.changes": "Changes", "dock.changesHead": "Changes", "dock.branch": "Git branch", "dock.revealTree": "Show file tree", "dock.collapseTree": "Collapse file tree", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first." },
-    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.tree": "文件树", "dock.files": "文件", "dock.git": "Git / 更改", "dock.changes": "更改", "dock.changesHead": "更改", "dock.branch": "Git 分支", "dock.revealTree": "显示文件树", "dock.collapseTree": "折叠文件树", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件" }
+    en: { "produced.label": "Open in pane", "dock.title": "Files", "dock.close": "Close pane", "dock.openTab": "Open in new tab", "dock.home": "Files root", "dock.up": "Up one level", "dock.reload": "Reload", "dock.diff": "Version diff", "dock.tree": "File tree", "dock.files": "Files", "dock.git": "Git / Changes", "dock.changes": "Changes", "dock.changesHead": "Changes", "dock.branch": "Git branch", "dock.revealTree": "Show file tree", "dock.collapseTree": "Collapse file tree", "dock.noSession": "No session available for diff — open the file from a produced-file chip in chat first.", "dock.theme": "Theme", "dock.themeDefault": "DSH default" },
+    zh: { "produced.label": "在面板中打开", "dock.title": "文件", "dock.close": "关闭面板", "dock.openTab": "在新标签页打开", "dock.home": "文件根目录", "dock.up": "上一级", "dock.reload": "刷新", "dock.diff": "版本对比", "dock.tree": "文件树", "dock.files": "文件", "dock.git": "Git / 更改", "dock.changes": "更改", "dock.changesHead": "更改", "dock.branch": "Git 分支", "dock.revealTree": "显示文件树", "dock.collapseTree": "折叠文件树", "dock.noSession": "当前无会话可用于对比 —— 请先在聊天中通过产物文件芯片打开该文件", "dock.theme": "主题", "dock.themeDefault": "默认" }
   }), "dsh-file-pane: dictionaries");
   // Passive diff spill: agent edit before/after -> host RAM (per open session).
   ctx.conversationEvents.register(makeDiffSpillDefinition(getSession));
@@ -845,7 +906,14 @@ function apply(ctx) {
   // space with the conversation, which resizes around it, matching DSH's native
   // look). priority -1 shadows the built-in DetailsPanel (tool details); this
   // accepted trade-off keeps the pane in the same column treatment as DSH.
-  const DockEntry = createDockEntry({ t: ctx.locale.bind(NS), layout, getSession, getCwd });
+  const themeController = createThemeController(theme, {
+    load: () => { try { return globalThis.localStorage?.getItem(THEME_STORAGE_KEY) ?? null; } catch { return null; } },
+    emitter: ctx
+  });
+  // Config default (cordis.patch.yml themePreset) is the fallback seed; a
+  // persisted localStorage choice wins at runtime.
+  const defaultTheme = resolveInitialPreset(ctx.config?.themePreset, (() => { try { return globalThis.localStorage?.getItem(THEME_STORAGE_KEY) ?? null; } catch { return null; } })());
+  const DockEntry = createDockEntry({ t: ctx.locale.bind(NS), layout, getSession, getCwd, themeController, defaultTheme });
   slots.inject("details", () =>
     slots.register({ name: "details", priority: -1, locale: NS }, DockEntry)
   );

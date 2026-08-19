@@ -74,7 +74,7 @@ test("apply waits for its services via inject (boot-safety regression)", () => {
     else globalThis.window = prev;
   }
   const { apply, inject } = captured.factory(() => ({ createElement: () => null, Fragment: {} }));
-  for (const svc of ["slots", "locale", "connection", "conversationEvents", "sessions", "layout"]) {
+  for (const svc of ["slots", "locale", "connection", "conversationEvents", "sessions", "layout", "theme"]) {
     assert.ok(inject.includes(svc), `plugin must declare service ${svc}`);
   }
 
@@ -95,13 +95,19 @@ test("apply waits for its services via inject (boot-safety regression)", () => {
   const locale = { register: (_ns, _dict) => { calls.locale++; }, bind: () => (() => {}) };
   const conversationEvents = { register: (_def) => { calls.events++; return () => {}; } };
   const sessions = { list: { getSnapshot: () => ({ current: "S1" }) } };
+  const theme = {
+    getTheme: () => ({ active: { colorScheme: "dark" } }),
+    overrideTokens: () => () => {}
+  };
   const ctx = {
     slots,
     locale,
     conversationEvents,
     connection: { isLoopback: false },
     layout: { openDetails() {}, closeDetails() {} },
-    get: (name) => ({ slots, locale, conversationEvents, connection: { isLoopback: false }, sessions, layout: ctx.layout })[name],
+    theme,
+    on: () => () => {}, // theme/change emitter guard used by createThemeController
+    get: (name) => ({ slots, locale, conversationEvents, connection: { isLoopback: false }, sessions, layout: ctx.layout, theme: ctx.theme })[name],
     effect: (cb) => { cb(); return () => {}; }
   };
   apply(ctx);

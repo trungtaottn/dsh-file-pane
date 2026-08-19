@@ -43,7 +43,8 @@
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-theme"
       ]
     }
   },
@@ -54,7 +55,7 @@
     "build:client": "node scripts/build-client.mjs",
     "build:assets": "node scripts/build-pdfjs.mjs",
     "build": "npm run build:client && npm run build:assets",
-    "pretest": "node scripts/build-client.mjs && node scripts/build-pdfjs.mjs",
+    "pretest": "node scripts/build-theme-test.mjs && node scripts/build-client.mjs && node scripts/build-pdfjs.mjs",
     "test": "node --test test/*.test.mjs",
     "check": "node --input-type=module -e \"import('./lib/index.js').then(m=>console.log('plugin ok:',m.name))\"",
     "pack": "npm pack --dry-run",

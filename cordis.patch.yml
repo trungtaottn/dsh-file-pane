@@ -13,3 +13,7 @@
       config:
         workspaceRoot: !!js process.env.DSH_FILE_PANE_ROOT ?? process.env.HOME
         maxTextBytes: 2097152
+        # Theme preset for the in-app dock (per-feature settings). Accepted ids:
+        # dsh-default | deepseek-blue | nord | codex-warm. A user's
+        # localStorage choice (dsh.filePane.theme) overrides this at runtime.
+        themePreset: dsh-default

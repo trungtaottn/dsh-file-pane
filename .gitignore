@@ -6,3 +6,6 @@ dist/
 HANDOFF-next-session.md
 # internal research/design reports — never commit (local-only)
 plans/
+
+# generated theme test bundle (rebuilt by pretest)
+test/theme-dist/
