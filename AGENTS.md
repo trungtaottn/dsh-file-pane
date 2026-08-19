@@ -185,16 +185,17 @@ paths of the owner's deployment live only in `AGENTS.local.md` (gitignored).
 Before opening ANY PR (or pushing any commit), verify the committed files do
 not leak internal details:
 
-- Run the leak scanner and fix any hit before committing:
+- The local leak scanner is `scripts/check-public-leaks.mjs` (gitignored —
+  not committed). On the owner's machine, run it and fix any hit before
+  committing:
   ```sh
-  NODE_OPTIONS= node scripts/check-public-leaks.mjs
-  # (patterns come from DSH_FILE_PANE_LEAK_PATTERNS env; on the owner's
-  #  machine set it from AGENTS.local.md, e.g. the real hostname/service/path)
+  DSH_FILE_PANE_LEAK_PATTERNS="<real values from AGENTS.local.md>" \
+    NODE_OPTIONS= node scripts/check-public-leaks.mjs
   ```
 - Never commit values from `AGENTS.local.md` into tracked files: real
   hostnames (`*.internal`, tunnel domains), systemd service names, ports,
-  `~/…` machine paths, Cloudflare/`*.cloudflareaccess.com` identities, or the
-  owner's username.
+  `~/…` machine paths, Cloudflare Access identity URLs, or the owner's
+  username.
 - Placeholders like `<YOUR_DOMAIN>`, `dsh-file-pane-web`, `/home/user`, and
   `~/Code/…` are the public-safe spellings to use instead.
 - When a doc/comment/script needs a real value to run locally, read it from an
