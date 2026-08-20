@@ -771,6 +771,15 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const [tabs, setTabs] = useState([]);
   const [activePluginId, setActivePluginId] = useState(null); // when set, a plugin-registered tab owns the editor
   const [pluginTabs, setPluginTabs] = useState([]); // tabs registered via ctx.filePane.registerTab
+  // Dual-workbench (ported from DSH-better-sidebar's right + bottom panels): a
+  // vertical split adds a BOTTOM pane that can hold its own file tabs, so two
+  // files are visible at once. Read-only — both panes render via the secure
+  // host /browser route.
+  const [bottomTabs, setBottomTabs] = useState([]);
+  const [bottomActiveId, setBottomActiveId] = useState(null);
+  const [splitOpen, setSplitOpen] = useState(false);
+  const [splitPct, setSplitPct] = useState(55); // top pane height %
+  const [focusedPane, setFocusedPane] = useState("top"); // tree / produced-chip opens into this pane
 
   // Restore the last docked path/session once (before any user open).
   const seeded = useRef(false);
@@ -986,12 +995,59 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const nav = (next) => { setPath(next); }; // navigating resets diff
   // Opening a file focuses the content and hides the tree (tab-like); the tree
   // stays reachable via a hover-reveal strip. Navigating to a dir re-shows it.
+  // When the BOTTOM split pane is focused + open, the file opens there instead
+  // of the TOP pane (dual-workbench). De-dupes per (session, path).
   const openFile = (p) => {
     const sid = effSession;
     const id = tabKey(sid, p);
+    if (focusedPane === "bottom" && splitOpen) {
+      setBottomTabs((prev) => (prev.some((t) => t.id === id) ? prev : [...prev, { id, title: basename(p), path: p, session: sid }]));
+      setBottomActiveId(id); setShowTree(false);
+      return;
+    }
     setTabs((prev) => (prev.some((t) => t.id === id) ? prev : [...prev, { id, title: basename(p), path: p, session: sid }]));
     setPath(p); setDiff(false); setCommitTarget(null); setBlameOn(false); setShowTree(false); setActivePluginId(null);
     persistDockState({ path: p, session: sid });
+  };
+  // Close a bottom-pane tab; if it was active, fall back to a neighbour or clear.
+  const closeBottomTab = (id) => {
+    setBottomTabs((prev) => {
+      const idx = prev.findIndex((t) => t.id === id);
+      if (idx < 0) return prev;
+      const next = prev.slice(); next.splice(idx, 1);
+      if (id === bottomActiveId) {
+        const neighbour = next[idx] || next[idx - 1] || null;
+        setBottomActiveId(neighbour ? neighbour.id : null);
+      }
+      return next;
+    });
+  };
+  // Toggle the vertical split; when enabling with no bottom file yet, seed the
+  // bottom pane from the current top file so two panes appear immediately.
+  const toggleSplit = () => {
+    setSplitOpen((open) => {
+      const next = !open;
+      if (next && !bottomActiveId && path) {
+        setBottomTabs([{ id: tabKey(effSession, path), title: basename(path), path, session: effSession }]);
+        setBottomActiveId(tabKey(effSession, path));
+      }
+      if (!next) setBottomTabs([]);
+      return next;
+    });
+  };
+  // Drag the splitter to resize the top/bottom panes (clamped 20–80%).
+  const startSplitDrag = (e) => {
+    e.preventDefault();
+    const editor = rootRef.current?.querySelector(".dshfp-editor");
+    if (!editor) return;
+    const rect = editor.getBoundingClientRect();
+    const move = (ev) => {
+      const pct = ((ev.clientY - rect.top) / rect.height) * 100;
+      setSplitPct(Math.max(20, Math.min(80, pct)));
+    };
+    const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
   };
   // Close a file tab; if it was active, fall back to a neighbour or the Files root.
   const closeTab = (id) => {
@@ -1135,6 +1191,10 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-tab-x{background:none;border:0;color:inherit;opacity:.55;cursor:pointer;font-size:11px;line-height:1;padding:1px 3px;border-radius:3px;flex:none}
         .dshfp-tab-x:hover{opacity:1;background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.18));color:var(--dsw-alias-state-danger-primary,#ff6b6b)}
         .dshfp-tab-empty{padding:16px;color:var(--dsw-alias-label-tertiary,#9aa3b5);font-size:12px}
+        .dshfp-pane{display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden}
+        .dshfp-splitter{height:6px;flex:none;cursor:row-resize;background:var(--dsw-alias-border-l2,rgba(255,255,255,.12));transition:background .12s ease}
+        .dshfp-splitter:hover{background:var(--dsw-alias-state-business-primary,#5b96ff)}
+        .dshfp-tab-empty-pill{padding:0 10px;color:var(--dsw-alias-label-tertiary,#9aa3b5);opacity:.7;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
         .dshfp-tree-l{list-style:none;margin:0;padding:0}
         .dshfp-tree-c{list-style:none;margin:0;padding:0}
         .dshfp-tree-row .dshfp-tree-row{padding-left:2px}
@@ -1213,6 +1273,9 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         </button>
         <button type="button" title={t?.("dock.blame") ?? "Blame"} data-on={blameOn || undefined} disabled={!isTextPath(path) || path === undefined} onClick={() => { setBlameOn((v) => !v); setDiff(false); setCommitTarget(null); }}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 5.5 8 2.5l5.5 3v6L8 14.5l-5.5-3z"/><path d="M8 8.5 13 5.5M8 8.5 3 5.5M8 8.5V14"/></svg>
+        </button>
+        <button type="button" title={"Split editor (top / bottom)"} data-on={splitOpen || undefined} onClick={toggleSplit}>
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 3.5h10v4H3zM3 9.5h10v3H3z"/><path d="M3 7.5h10" stroke-dasharray="1.5 1.5"/></svg>
         </button>
         <button type="button" title={t?.("dock.openTab") ?? "Open in new tab"} onClick={() => window.open(src, "_blank", "noopener")}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6.5 9.5 13 3"/><path d="M8.5 3H13v4.5"/><path d="M13 9v3.5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5H7"/></svg>
@@ -1330,49 +1393,127 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
           )}
         </div>
         <div className="dshfp-editor">
-          <div className="dshfp-tabs" role="tablist" aria-label={t?.("dock.openTab") ?? "Open tabs"}>
-            <div
-              key="t:files"
-              className={"dshfp-tab" + (path === undefined && !activePluginId ? " on" : "")}
-              onClick={openFiles}
-              title={t?.("dock.files") ?? "Files"}
-            >
-              <span className="dshfp-tab-nm">{t?.("dock.files") ?? "Files"}</span>
-            </div>
-            {tabs.map((tt) => (
-              <div
-                key={tt.id}
-                className={"dshfp-tab" + (tt.path === path && tt.session === effSession && !activePluginId ? " on" : "")}
-                onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(tt.id); } }}
-                onClick={() => openFile(tt.path)}
-                title={tt.path ?? ""}
-              >
-                <span className="dshfp-tab-nm">{tt.title}</span>
-                <button type="button" className="dshfp-tab-x" onClick={(e) => { e.stopPropagation(); closeTab(tt.id); }} title={t?.("dock.close") ?? "Close"} aria-label={t?.("dock.close") ?? "Close"}>✕</button>
+          {splitOpen ? (
+            <>
+              <div className="dshfp-pane" style={{ height: splitPct + "%" }} onMouseDown={() => setFocusedPane("top")}>
+                <div className="dshfp-tabs" role="tablist" aria-label={t?.("dock.openTab") ?? "Open tabs"}>
+                  <div
+                    key="t:files"
+                    className={"dshfp-tab" + (path === undefined && !activePluginId ? " on" : "")}
+                    onClick={openFiles}
+                    title={t?.("dock.files") ?? "Files"}
+                  >
+                    <span className="dshfp-tab-nm">{t?.("dock.files") ?? "Files"}</span>
+                  </div>
+                  {tabs.map((tt) => (
+                    <div
+                      key={tt.id}
+                      className={"dshfp-tab" + (tt.path === path && tt.session === effSession && !activePluginId ? " on" : "")}
+                      onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(tt.id); } }}
+                      onClick={() => openFile(tt.path)}
+                      title={tt.path ?? ""}
+                    >
+                      <span className="dshfp-tab-nm">{tt.title}</span>
+                      <button type="button" className="dshfp-tab-x" onClick={(e) => { e.stopPropagation(); closeTab(tt.id); }} title={t?.("dock.close") ?? "Close"} aria-label={t?.("dock.close") ?? "Close"}>✕</button>
+                    </div>
+                  ))}
+                  {pluginTabs.map((pt) => (
+                    <div
+                      key={"plugin:" + pt.id}
+                      className={"dshfp-tab" + (activePluginId === pt.id ? " on" : "")}
+                      onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); filePane?.closeTab?.(pt.id); } }}
+                      onClick={() => { setActivePluginId(pt.id); setShowTree(false); }}
+                      title={pt.title ?? pt.id}
+                    >
+                      <span className="dshfp-tab-nm">{pt.title ?? pt.id}</span>
+                      {pt.closable !== false ? (
+                        <button type="button" className="dshfp-tab-x" onClick={(e) => { e.stopPropagation(); filePane?.closeTab?.(pt.id); }} title={t?.("dock.close") ?? "Close"} aria-label={t?.("dock.close") ?? "Close"}>✕</button>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+                {activePluginId ? (() => {
+                  const pt = pluginTabs.find((x) => x.id === activePluginId);
+                  if (!pt) return null;
+                  const C = pt.component;
+                  return C ? <C sessionId={effSession} /> : <div className="dshfp-tab-empty">{t?.("dock.noSession") ?? "No content"}</div>;
+                })() : (
+                  <iframe key={path + ":" + diff + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
+                )}
               </div>
-            ))}
-            {pluginTabs.map((pt) => (
-              <div
-                key={"plugin:" + pt.id}
-                className={"dshfp-tab" + (activePluginId === pt.id ? " on" : "")}
-                onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); filePane?.closeTab?.(pt.id); } }}
-                onClick={() => { setActivePluginId(pt.id); setShowTree(false); }}
-                title={pt.title ?? pt.id}
-              >
-                <span className="dshfp-tab-nm">{pt.title ?? pt.id}</span>
-                {pt.closable !== false ? (
-                  <button type="button" className="dshfp-tab-x" onClick={(e) => { e.stopPropagation(); filePane?.closeTab?.(pt.id); }} title={t?.("dock.close") ?? "Close"} aria-label={t?.("dock.close") ?? "Close"}>✕</button>
-                ) : null}
+              <div className="dshfp-splitter" onMouseDown={startSplitDrag} title="Drag to resize panes" role="separator" aria-orientation="horizontal" />
+              <div className="dshfp-pane" style={{ height: (100 - splitPct) + "%" }} onMouseDown={() => setFocusedPane("bottom")}>
+                <div className="dshfp-tabs" role="tablist" aria-label="Bottom tabs">
+                  {bottomTabs.length === 0 ? (
+                    <div className="dshfp-tab dshfp-tab-empty-pill">bottom</div>
+                  ) : bottomTabs.map((tt) => (
+                    <div
+                      key={tt.id}
+                      className={"dshfp-tab" + (tt.id === bottomActiveId ? " on" : "")}
+                      onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); closeBottomTab(tt.id); } }}
+                      onClick={() => setBottomActiveId(tt.id)}
+                      title={tt.path ?? ""}
+                    >
+                      <span className="dshfp-tab-nm">{tt.title}</span>
+                      <button type="button" className="dshfp-tab-x" onClick={(e) => { e.stopPropagation(); closeBottomTab(tt.id); }} title={t?.("dock.close") ?? "Close"} aria-label={t?.("dock.close") ?? "Close"}>✕</button>
+                    </div>
+                  ))}
+                </div>
+                {(() => {
+                  const ba = bottomTabs.find((tt) => tt.id === bottomActiveId) || null;
+                  if (!ba) return <div className="dshfp-tab-empty">Split pane — focus it, then open a file from the tree / a produced-file chip to view two files at once.</div>;
+                  const bs = dockSrc(ba.path, { session: ba.session, workspace: base });
+                  return <iframe key={"b:" + ba.path + ":" + stamp} src={bs} title={t?.("dock.title") ?? "File pane"} />;
+                })()}
               </div>
-            ))}
-          </div>
-          {activePluginId ? (() => {
-            const pt = pluginTabs.find((x) => x.id === activePluginId);
-            if (!pt) return null;
-            const C = pt.component;
-            return C ? <C sessionId={effSession} /> : <div className="dshfp-tab-empty">{t?.("dock.noSession") ?? "No content"}</div>;
-          })() : (
-            <iframe key={path + ":" + diff + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
+            </>
+          ) : (
+            <>
+              <div className="dshfp-tabs" role="tablist" aria-label={t?.("dock.openTab") ?? "Open tabs"}>
+                <div
+                  key="t:files"
+                  className={"dshfp-tab" + (path === undefined && !activePluginId ? " on" : "")}
+                  onClick={openFiles}
+                  title={t?.("dock.files") ?? "Files"}
+                >
+                  <span className="dshfp-tab-nm">{t?.("dock.files") ?? "Files"}</span>
+                </div>
+                {tabs.map((tt) => (
+                  <div
+                    key={tt.id}
+                    className={"dshfp-tab" + (tt.path === path && tt.session === effSession && !activePluginId ? " on" : "")}
+                    onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(tt.id); } }}
+                    onClick={() => openFile(tt.path)}
+                    title={tt.path ?? ""}
+                  >
+                    <span className="dshfp-tab-nm">{tt.title}</span>
+                    <button type="button" className="dshfp-tab-x" onClick={(e) => { e.stopPropagation(); closeTab(tt.id); }} title={t?.("dock.close") ?? "Close"} aria-label={t?.("dock.close") ?? "Close"}>✕</button>
+                  </div>
+                ))}
+                {pluginTabs.map((pt) => (
+                  <div
+                    key={"plugin:" + pt.id}
+                    className={"dshfp-tab" + (activePluginId === pt.id ? " on" : "")}
+                    onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); filePane?.closeTab?.(pt.id); } }}
+                    onClick={() => { setActivePluginId(pt.id); setShowTree(false); }}
+                    title={pt.title ?? pt.id}
+                  >
+                    <span className="dshfp-tab-nm">{pt.title ?? pt.id}</span>
+                    {pt.closable !== false ? (
+                      <button type="button" className="dshfp-tab-x" onClick={(e) => { e.stopPropagation(); filePane?.closeTab?.(pt.id); }} title={t?.("dock.close") ?? "Close"} aria-label={t?.("dock.close") ?? "Close"}>✕</button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+              {activePluginId ? (() => {
+                const pt = pluginTabs.find((x) => x.id === activePluginId);
+                if (!pt) return null;
+                const C = pt.component;
+                return C ? <C sessionId={effSession} /> : <div className="dshfp-tab-empty">{t?.("dock.noSession") ?? "No content"}</div>;
+              })() : (
+                <iframe key={path + ":" + diff + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
+              )}
+            </>
           )}
         </div>
       </div>
