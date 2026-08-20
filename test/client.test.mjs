@@ -108,7 +108,8 @@ test("apply waits for its services via inject (boot-safety regression)", () => {
     theme,
     on: () => () => {}, // theme/change emitter guard used by createThemeController
     get: (name) => ({ slots, locale, conversationEvents, connection: { isLoopback: false }, sessions, layout: ctx.layout, theme: ctx.theme })[name],
-    effect: (cb) => { cb(); return () => {}; }
+    effect: (cb) => { cb(); return () => {}; },
+    provide: () => () => {} // cordis ctx.provide(name, value) — registers a service
   };
   apply(ctx);
   // two chain entries (turnTail + details) + one footer action slot
@@ -194,6 +195,7 @@ test("apply does not read ctx.config (would throw 'without inject' on the real s
 			if (prop === "get") return (name) => t[name];
 			if (prop === "effect") return (cb) => { cb(); return () => {}; };
 			if (prop === "on") return () => () => {};
+			if (prop === "provide") return () => () => {}; // cordis ctx.provide(name, value)
 			if (allowed.has(prop)) return t[prop];
 			throw new Error(`cannot get property "${String(prop)}" without inject`);
 		}
