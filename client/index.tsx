@@ -1068,11 +1068,6 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
       return next;
     });
   };
-  // Files-root pseudo-tab: shows the workspace root listing and reveals the tree.
-  const openFiles = () => {
-    setActivePluginId(null); setPath(undefined); setDiff(false); setCommitTarget(null); setBlameOn(false); setShowTree(true); setSession(undefined);
-    persistDockState({ path: undefined, session: undefined });
-  };
   const navDir = (p) => { setPath(p); setDiff(false); setShowTree(true); }; // dir/root nav keeps the tree visible
   // VSCode-style activity toggle: clicking the ACTIVE view's icon collapses the
   // panel back to the rail; clicking it again (or another icon) opens/switches.
@@ -1397,14 +1392,6 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
             <>
               <div className="dshfp-pane" style={{ height: splitPct + "%" }} onMouseDown={() => setFocusedPane("top")}>
                 <div className="dshfp-tabs" role="tablist" aria-label={t?.("dock.openTab") ?? "Open tabs"}>
-                  <div
-                    key="t:files"
-                    className={"dshfp-tab" + (path === undefined && !activePluginId ? " on" : "")}
-                    onClick={openFiles}
-                    title={t?.("dock.files") ?? "Files"}
-                  >
-                    <span className="dshfp-tab-nm">{t?.("dock.files") ?? "Files"}</span>
-                  </div>
                   {tabs.map((tt) => (
                     <div
                       key={tt.id}
@@ -1470,14 +1457,6 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
           ) : (
             <>
               <div className="dshfp-tabs" role="tablist" aria-label={t?.("dock.openTab") ?? "Open tabs"}>
-                <div
-                  key="t:files"
-                  className={"dshfp-tab" + (path === undefined && !activePluginId ? " on" : "")}
-                  onClick={openFiles}
-                  title={t?.("dock.files") ?? "Files"}
-                >
-                  <span className="dshfp-tab-nm">{t?.("dock.files") ?? "Files"}</span>
-                </div>
                 {tabs.map((tt) => (
                   <div
                     key={tt.id}
