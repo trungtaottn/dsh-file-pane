@@ -19,7 +19,7 @@
  * branch is checked out is what :3091 serves — production stays untouched.
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, openSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -84,12 +84,19 @@ function main() {
   // NOT add the `web` subcommand (it is an alias hardcoded to the profile named
   // "web") and do NOT use `--` (it would swallow --port, falling back to the
   // default 3080 which production already holds → EADDRINUSE, silent no-boot).
+  // Spawn detached + unref so the long-running dsh server survives this launcher
+  // process exiting (dsh re-parents its server into a new session); logs go to a
+  // file since a detached child cannot inherit our stdio.
+  const LOGFILE = join(process.env.HOME, ".dsh", "dsh-file-pane-preview.log");
+  const logFd = openSync(LOGFILE, "a");
   const child = spawn("dsh", ["--profile", "preview", "--port", PORT, "--no-open", ...trusted], {
-    cwd: ROOT, stdio: "inherit", env: { ...process.env, NODE_OPTIONS: "" }
+    cwd: ROOT, detached: true, stdio: ["ignore", logFd, logFd], env: { ...process.env, NODE_OPTIONS: "" }
   });
+  child.unref();
   writeFileSync(PIDFILE, String(child.pid));
   child.on("exit", () => { try { writeFileSync(PIDFILE, ""); } catch {} });
   console.log(`Open http://127.0.0.1:${PORT} || stop with: node scripts/preview-branch.mjs --stop`);
+  console.log(`Preview log: ${LOGFILE}`);
 }
 
 main();
