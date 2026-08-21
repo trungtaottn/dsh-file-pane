@@ -79,6 +79,18 @@ function tabKey(sid, p) {
   return "t:" + (sid ?? "") + ":" + (p ?? "");
 }
 
+/** Image extensions we can preview natively (inline <img>) instead of iframing. */
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
+function isImagePath(p) {
+  return IMAGE_EXT.test(p ?? "");
+}
+/** Raw-byte URL for an image (host serves bytes; resolveWithin keeps it in-root). */
+function rawSrc(p, workspace) {
+  let q = "/browser/?path=" + encodeURIComponent(p ?? "") + "&raw=1";
+  if (workspace) q += "&workspace=" + encodeURIComponent(workspace);
+  return q;
+}
+
 /** Persisted tab list (session-isolated via the store key). */
 const TAB_STORE_KEY = "dsh.filePane.tabs.v1";
 function loadTabs() {
@@ -1190,6 +1202,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-splitter{height:6px;flex:none;cursor:row-resize;background:var(--dsw-alias-border-l2,rgba(255,255,255,.12));transition:background .12s ease}
         .dshfp-splitter:hover{background:var(--dsw-alias-state-business-primary,#5b96ff)}
         .dshfp-tab-empty-pill{padding:0 10px;color:var(--dsw-alias-label-tertiary,#9aa3b5);opacity:.7;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+        .dshfp-img{display:block;max-width:100%;max-height:100%;width:auto;height:auto;margin:auto;object-fit:contain;padding:14px;background:var(--dsw-alias-bg-base,#0f1117);min-height:0}
         /* Mobile (<768px): the in-flow details column becomes a full-width
            overlay drawer (ported from DSH-better-sidebar's mobile behavior),
            toggled by the same footer button / Ctrl+Shift+B. Desktop unchanged. */
@@ -1432,7 +1445,9 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
                   if (!pt) return null;
                   const C = pt.component;
                   return C ? <C sessionId={effSession} /> : <div className="dshfp-tab-empty">{t?.("dock.noSession") ?? "No content"}</div>;
-                })() : (
+                })() : isImagePath(path) ? (
+                  <img className="dshfp-img" src={rawSrc(path, base)} alt={path ?? ""} title={path ?? ""} />
+                ) : (
                   <iframe key={path + ":" + diff + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
                 )}
               </div>
@@ -1457,6 +1472,7 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
                 {(() => {
                   const ba = bottomTabs.find((tt) => tt.id === bottomActiveId) || null;
                   if (!ba) return <div className="dshfp-tab-empty">Split pane — focus it, then open a file from the tree / a produced-file chip to view two files at once.</div>;
+                  if (isImagePath(ba.path)) return <img className="dshfp-img" src={rawSrc(ba.path, base)} alt={ba.path ?? ""} title={ba.path ?? ""} />;
                   const bs = dockSrc(ba.path, { session: ba.session, workspace: base });
                   return <iframe key={"b:" + ba.path + ":" + stamp} src={bs} title={t?.("dock.title") ?? "File pane"} />;
                 })()}
