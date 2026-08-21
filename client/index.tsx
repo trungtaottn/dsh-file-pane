@@ -1,6 +1,13 @@
 /**
  * dsh-file-pane — client-plugin (browser half).
  *
+ * The tabbed-workbench UI pattern is adapted from omdsh-dev/DSH-better-sidebar
+ * (MIT, https://github.com/omdsh-dev/DSH-better-sidebar). It is ported to
+ * dsh-file-pane's read-only remote-viewer model: no editor / terminal /
+ * git-write / subagent surfaces are carried over — only the tabbed file
+ * viewing, explorer, and service-first extension point.
+ * Original © omdsh-dev (MIT). This adaptation © dsh-file-pane contributors (MIT).
+ *
  * Registers a `conversation.chat.turnTail` chain entry that SUPERSEDES the
  * built-in "Produced" row for remote (non-loopback) viewers: clicking a
  * produced-file chip navigates to the dsh-file-pane viewer route
@@ -62,6 +69,96 @@ export const inject = ["slots", "locale", "connection", "conversationEvents", "s
 function basename(p) {
   const at = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
   return at === -1 ? p : p.slice(at + 1);
+}
+
+/**
+ * Stable tab id for a (session, path) pair — opened files dedupe per session so
+ * re-opening the same file focuses its existing tab instead of stacking copies.
+ */
+function tabKey(sid, p) {
+  return "t:" + (sid ?? "") + ":" + (p ?? "");
+}
+
+/** Image extensions we can preview natively (inline <img>) instead of iframing. */
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
+function isImagePath(p) {
+  return IMAGE_EXT.test(p ?? "");
+}
+/** Raw-byte URL for an image (host serves bytes; resolveWithin keeps it in-root). */
+function rawSrc(p, workspace) {
+  let q = "/browser/?path=" + encodeURIComponent(p ?? "") + "&raw=1";
+  if (workspace) q += "&workspace=" + encodeURIComponent(workspace);
+  return q;
+}
+
+/** Persisted tab list (session-isolated via the store key). */
+const TAB_STORE_KEY = "dsh.filePane.tabs.v1";
+function loadTabs() {
+  try {
+    const raw = globalThis.localStorage?.getItem(TAB_STORE_KEY);
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    return Array.isArray(o?.tabs) ? o : null;
+  } catch {
+    return null;
+  }
+}
+function saveTabs(tabs, activeId) {
+  try {
+    globalThis.localStorage?.setItem(TAB_STORE_KEY, JSON.stringify({ tabs, activeId }));
+  } catch {
+    /* storage may be unavailable (private mode) — tabs just won't persist */
+  }
+}
+
+/**
+ * The `ctx.filePane` extension service (service-first pattern ported from
+ * DSH-better-sidebar's `ctx.betterSidebar`): other plugins register read-only
+ * tabs / file viewers that appear in our workbench. Read-only by contract —
+ * no editor / terminal / git-write / subagent surfaces are exposed.
+ *
+ * @typedef {{ id: string, title?: string, component?: any, closable?: boolean }} FilePaneTab
+ * @typedef {{ id: string, extensions: string[], component?: any }} FilePaneViewer
+ */
+function createFilePaneService() {
+  /** @type {FilePaneTab[]} */
+  const tabs = [];
+  /** @type {FilePaneViewer[]} */
+  const viewers = [];
+  const listeners = new Set();
+  const emit = () => { for (const l of listeners) { try { l(); } catch { /* ignore subscriber errors */ } } };
+  return {
+    version: "0.1.0",
+    /** Register a read-only workbench tab. Returns a disposer. */
+    registerTab(descriptor) {
+      const d = {
+        id: String(descriptor.id),
+        title: String(descriptor.title ?? descriptor.id),
+        component: descriptor.component,
+        closable: descriptor.closable !== false,
+      };
+      tabs.push(d); emit();
+      return () => { const i = tabs.indexOf(d); if (i >= 0) tabs.splice(i, 1); emit(); };
+    },
+    /** Register a file viewer for extensions (discovery point; read-only). */
+    registerFileViewer(descriptor) {
+      const d = {
+        id: String(descriptor.id),
+        extensions: Array.isArray(descriptor.extensions) ? descriptor.extensions : [],
+        component: descriptor.component,
+      };
+      viewers.push(d); emit();
+      return () => { const i = viewers.indexOf(d); if (i >= 0) viewers.splice(i, 1); emit(); };
+    },
+    /** Close a plugin-registered tab by id (used by the tab's × button). */
+    closeTab(id) {
+      const i = tabs.findIndex((tt) => tt.id === id);
+      if (i >= 0) { tabs.splice(i, 1); emit(); }
+    },
+    getTabs: () => tabs.slice(),
+    getViewers: () => viewers.slice(),
+    subscribe(l) { listeners.add(l); return () => listeners.delete(l); },
+  };
 }
 
 /**
@@ -651,7 +748,7 @@ function ThemePicker({ t, value, onChange }) {
   );
 }
 
-function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces, layout, getSession, getCwd, themeController, defaultTheme }) {
+function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces, layout, getSession, getCwd, themeController, defaultTheme, filePane }) {
   const rootRef = useRef(null);
   const [path, setPath] = useState(undefined); // undefined → root listing
   const [session, setSession] = useState(undefined);
@@ -678,6 +775,24 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const [commitTarget, setCommitTarget] = useState(null); // { sha } → ?gitview=commit src
   const [watching, setWatching] = useState(true); // live-watch health (false → poll fallback)
 
+  // Tabbed-workbench state (ported UI pattern from DSH-better-sidebar, read-only):
+  // an ordered, deduped list of opened file paths. The active tab is the current
+  // `path`; opening a file from the tree / produced chip / changes list appends a
+  // tab (focusing it if already open). Persisted per page load so reopening the
+  // dock restores the session's tabs.
+  const [tabs, setTabs] = useState([]);
+  const [activePluginId, setActivePluginId] = useState(null); // when set, a plugin-registered tab owns the editor
+  const [pluginTabs, setPluginTabs] = useState([]); // tabs registered via ctx.filePane.registerTab
+  // Dual-workbench (ported from DSH-better-sidebar's right + bottom panels): a
+  // vertical split adds a BOTTOM pane that can hold its own file tabs, so two
+  // files are visible at once. Read-only — both panes render via the secure
+  // host /browser route.
+  const [bottomTabs, setBottomTabs] = useState([]);
+  const [bottomActiveId, setBottomActiveId] = useState(null);
+  const [splitOpen, setSplitOpen] = useState(false);
+  const [splitPct, setSplitPct] = useState(55); // top pane height %
+  const [focusedPane, setFocusedPane] = useState("top"); // tree / produced-chip opens into this pane
+
   // Restore the last docked path/session once (before any user open).
   const seeded = useRef(false);
 
@@ -703,8 +818,36 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
       setOpen(true); persistDockOpen(true); layout?.openDetails?.();
     };
     window.addEventListener(DOCK_OPEN_EVENT, onOpen);
+    // Restore persisted tabs + active tab (ported from DSH-better-sidebar's
+    // session-isolated layout persistence, trimmed to the tab list).
+    const saved = loadTabs();
+    if (saved) {
+      setTabs(saved.tabs || []);
+      const aId = saved.activeId;
+      if (aId && (saved.tabs || []).some((tt) => tt.id === aId)) {
+        const at = (saved.tabs || []).find((tt) => tt.id === aId);
+        if (at && at.path !== undefined) { setPath(at.path); setSession(at.session); setShowTree(false); }
+      }
+    }
     return () => { dockMounted = false; window.removeEventListener(DOCK_OPEN_EVENT, onOpen); };
   }, [layout, open]);
+
+  // Subscribe to plugin-registered tabs (ctx.filePane.registerTab) so external
+  // read-only plugins surface as workbench tabs alongside our file tabs.
+  useEffect(() => {
+    if (!filePane) return;
+    const sync = () => setPluginTabs(filePane.getTabs().slice());
+    sync();
+    return filePane.subscribe(sync);
+  }, [filePane]);
+
+  // Persist the tab list + active tab across reloads.
+  useEffect(() => {
+    const sid = typeof getSession === "function" ? getSession() : undefined;
+    const aId = tabs.find((tt) => tt.path === path && tt.session === sid)?.id ?? null;
+    saveTabs(tabs, aId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabs, path]);
 
   const toggle = useCallback((next) => {
     setOpen(next); persistDockOpen(next);
@@ -864,7 +1007,79 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
   const nav = (next) => { setPath(next); }; // navigating resets diff
   // Opening a file focuses the content and hides the tree (tab-like); the tree
   // stays reachable via a hover-reveal strip. Navigating to a dir re-shows it.
-  const openFile = (p) => { setPath(p); setDiff(false); setCommitTarget(null); setBlameOn(false); setShowTree(false); persistDockState({ path: p, session: effSession }); };
+  // When the BOTTOM split pane is focused + open, the file opens there instead
+  // of the TOP pane (dual-workbench). De-dupes per (session, path).
+  const openFile = (p) => {
+    const sid = effSession;
+    const id = tabKey(sid, p);
+    if (focusedPane === "bottom" && splitOpen) {
+      setBottomTabs((prev) => (prev.some((t) => t.id === id) ? prev : [...prev, { id, title: basename(p), path: p, session: sid }]));
+      setBottomActiveId(id); setShowTree(false);
+      return;
+    }
+    setTabs((prev) => (prev.some((t) => t.id === id) ? prev : [...prev, { id, title: basename(p), path: p, session: sid }]));
+    setPath(p); setDiff(false); setCommitTarget(null); setBlameOn(false); setShowTree(false); setActivePluginId(null);
+    persistDockState({ path: p, session: sid });
+  };
+  // Close a bottom-pane tab; if it was active, fall back to a neighbour or clear.
+  const closeBottomTab = (id) => {
+    setBottomTabs((prev) => {
+      const idx = prev.findIndex((t) => t.id === id);
+      if (idx < 0) return prev;
+      const next = prev.slice(); next.splice(idx, 1);
+      if (id === bottomActiveId) {
+        const neighbour = next[idx] || next[idx - 1] || null;
+        setBottomActiveId(neighbour ? neighbour.id : null);
+      }
+      return next;
+    });
+  };
+  // Toggle the vertical split; when enabling with no bottom file yet, seed the
+  // bottom pane from the current top file so two panes appear immediately.
+  const toggleSplit = () => {
+    setSplitOpen((open) => {
+      const next = !open;
+      if (next && !bottomActiveId && path) {
+        setBottomTabs([{ id: tabKey(effSession, path), title: basename(path), path, session: effSession }]);
+        setBottomActiveId(tabKey(effSession, path));
+      }
+      if (!next) setBottomTabs([]);
+      return next;
+    });
+  };
+  // Drag the splitter to resize the top/bottom panes (clamped 20–80%).
+  const startSplitDrag = (e) => {
+    e.preventDefault();
+    const editor = rootRef.current?.querySelector(".dshfp-editor");
+    if (!editor) return;
+    const rect = editor.getBoundingClientRect();
+    const move = (ev) => {
+      const pct = ((ev.clientY - rect.top) / rect.height) * 100;
+      setSplitPct(Math.max(20, Math.min(80, pct)));
+    };
+    const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  };
+  // Close a file tab; if it was active, fall back to a neighbour or the Files root.
+  const closeTab = (id) => {
+    setTabs((prev) => {
+      const idx = prev.findIndex((t) => t.id === id);
+      if (idx < 0) return prev;
+      const closed = prev[idx];
+      const next = prev.slice(); next.splice(idx, 1);
+      if (closed.path === path && closed.session === effSession) {
+        const neighbour = next[idx] || next[idx - 1] || null;
+        if (neighbour) {
+          setPath(neighbour.path); setSession(neighbour.session); setDiff(false); setCommitTarget(null); setBlameOn(false); setShowTree(false); setActivePluginId(null);
+          persistDockState({ path: neighbour.path, session: neighbour.session });
+        } else {
+          setPath(undefined); setSession(undefined); setShowTree(true); setActivePluginId(null);
+        }
+      }
+      return next;
+    });
+  };
   const navDir = (p) => { setPath(p); setDiff(false); setShowTree(true); }; // dir/root nav keeps the tree visible
   // VSCode-style activity toggle: clicking the ACTIVE view's icon collapses the
   // panel back to the rail; clicking it again (or another icon) opens/switches.
@@ -973,6 +1188,29 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         .dshfp-commit-btn{background:var(--dsw-alias-state-business-primary,rgba(91,150,255,.16));border:1px solid var(--dsw-alias-state-business-primary,#5b96ff);color:var(--dsw-alias-label-primary,#eef1f8);border-radius:5px;cursor:pointer;font:inherit;font-size:11px;padding:3px 8px;flex:none}
         .dshfp-commit-btn:disabled{opacity:.4;cursor:default}
         .dshfp-dock iframe{flex:1;width:100%;border:0;min-height:0;background:#0f1117}
+        .dshfp-editor{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;overflow:hidden}
+        .dshfp-tabs{display:flex;align-items:stretch;gap:0;flex:none;height:30px;background:var(--dsw-alias-bg-base,#0f1117);border-bottom:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+        .dshfp-tabs::-webkit-scrollbar{height:0;display:none}
+        .dshfp-tab{display:inline-flex;align-items:center;gap:5px;max-width:200px;padding:0 4px 0 10px;border-right:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));background:transparent;color:var(--dsw-alias-label-secondary,#c7ccd9);cursor:pointer;font:inherit;font-size:12px;line-height:1;white-space:nowrap;user-select:none}
+        .dshfp-tab:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06));color:var(--dsw-alias-label-primary,#eef1f8)}
+        .dshfp-tab.on{background:var(--dsw-alias-bg-elevated,#161922);color:var(--dsw-alias-label-primary,#eef1f8);box-shadow:inset 0 2px 0 var(--dsw-alias-state-business-primary,#5b96ff)}
+        .dshfp-tab-nm{overflow:hidden;text-overflow:ellipsis}
+        .dshfp-tab-x{background:none;border:0;color:inherit;opacity:.55;cursor:pointer;font-size:11px;line-height:1;padding:1px 3px;border-radius:3px;flex:none}
+        .dshfp-tab-x:hover{opacity:1;background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.18));color:var(--dsw-alias-state-danger-primary,#ff6b6b)}
+        .dshfp-tab-empty{padding:16px;color:var(--dsw-alias-label-tertiary,#9aa3b5);font-size:12px}
+        .dshfp-pane{display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden}
+        .dshfp-splitter{height:6px;flex:none;cursor:row-resize;background:var(--dsw-alias-border-l2,rgba(255,255,255,.12));transition:background .12s ease}
+        .dshfp-splitter:hover{background:var(--dsw-alias-state-business-primary,#5b96ff)}
+        .dshfp-tab-empty-pill{padding:0 10px;color:var(--dsw-alias-label-tertiary,#9aa3b5);opacity:.7;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+        .dshfp-img{display:block;max-width:100%;max-height:100%;width:auto;height:auto;margin:auto;object-fit:contain;padding:14px;background:var(--dsw-alias-bg-base,#0f1117);min-height:0}
+        /* Mobile (<768px): the in-flow details column becomes a full-width
+           overlay drawer (ported from DSH-better-sidebar's mobile behavior),
+           toggled by the same footer button / Ctrl+Shift+B. Desktop unchanged. */
+        @media (max-width: 768px) {
+          .dshfp-dock{position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;z-index:1000;border-left:0}
+          .dshfp-dock-head{flex-wrap:wrap}
+          .dshfp-dock-tree{width:150px;min-width:150px}
+        }
         .dshfp-tree-l{list-style:none;margin:0;padding:0}
         .dshfp-tree-c{list-style:none;margin:0;padding:0}
         .dshfp-tree-row .dshfp-tree-row{padding-left:2px}
@@ -1051,6 +1289,9 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
         </button>
         <button type="button" title={t?.("dock.blame") ?? "Blame"} data-on={blameOn || undefined} disabled={!isTextPath(path) || path === undefined} onClick={() => { setBlameOn((v) => !v); setDiff(false); setCommitTarget(null); }}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 5.5 8 2.5l5.5 3v6L8 14.5l-5.5-3z"/><path d="M8 8.5 13 5.5M8 8.5 3 5.5M8 8.5V14"/></svg>
+        </button>
+        <button type="button" title={"Split editor (top / bottom)"} data-on={splitOpen || undefined} onClick={toggleSplit}>
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 3.5h10v4H3zM3 9.5h10v3H3z"/><path d="M3 7.5h10" stroke-dasharray="1.5 1.5"/></svg>
         </button>
         <button type="button" title={t?.("dock.openTab") ?? "Open in new tab"} onClick={() => window.open(src, "_blank", "noopener")}>
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6.5 9.5 13 3"/><path d="M8.5 3H13v4.5"/><path d="M13 9v3.5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5H7"/></svg>
@@ -1167,7 +1408,117 @@ function DockRoot({ t, useSessions: _useSessions, useWorkspaces: _useWorkspaces,
             )
           )}
         </div>
-        <iframe key={path + ":" + diff + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
+        <div className="dshfp-editor">
+          {splitOpen ? (
+            <>
+              <div className="dshfp-pane" style={{ height: splitPct + "%" }} onMouseDown={() => setFocusedPane("top")}>
+                <div className="dshfp-tabs" role="tablist" aria-label={t?.("dock.openTab") ?? "Open tabs"}>
+                  {tabs.map((tt) => (
+                    <div
+                      key={tt.id}
+                      className={"dshfp-tab" + (tt.path === path && tt.session === effSession && !activePluginId ? " on" : "")}
+                      onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(tt.id); } }}
+                      onClick={() => openFile(tt.path)}
+                      title={tt.path ?? ""}
+                    >
+                      <span className="dshfp-tab-nm">{tt.title}</span>
+                      <button type="button" className="dshfp-tab-x" onClick={(e) => { e.stopPropagation(); closeTab(tt.id); }} title={t?.("dock.close") ?? "Close"} aria-label={t?.("dock.close") ?? "Close"}>✕</button>
+                    </div>
+                  ))}
+                  {pluginTabs.map((pt) => (
+                    <div
+                      key={"plugin:" + pt.id}
+                      className={"dshfp-tab" + (activePluginId === pt.id ? " on" : "")}
+                      onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); filePane?.closeTab?.(pt.id); } }}
+                      onClick={() => { setActivePluginId(pt.id); setShowTree(false); }}
+                      title={pt.title ?? pt.id}
+                    >
+                      <span className="dshfp-tab-nm">{pt.title ?? pt.id}</span>
+                      {pt.closable !== false ? (
+                        <button type="button" className="dshfp-tab-x" onClick={(e) => { e.stopPropagation(); filePane?.closeTab?.(pt.id); }} title={t?.("dock.close") ?? "Close"} aria-label={t?.("dock.close") ?? "Close"}>✕</button>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+                {activePluginId ? (() => {
+                  const pt = pluginTabs.find((x) => x.id === activePluginId);
+                  if (!pt) return null;
+                  const C = pt.component;
+                  return C ? <C sessionId={effSession} /> : <div className="dshfp-tab-empty">{t?.("dock.noSession") ?? "No content"}</div>;
+                })() : isImagePath(path) ? (
+                  <img className="dshfp-img" src={rawSrc(path, base)} alt={path ?? ""} title={path ?? ""} />
+                ) : (
+                  <iframe key={path + ":" + diff + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
+                )}
+              </div>
+              <div className="dshfp-splitter" onMouseDown={startSplitDrag} title="Drag to resize panes" role="separator" aria-orientation="horizontal" />
+              <div className="dshfp-pane" style={{ height: (100 - splitPct) + "%" }} onMouseDown={() => setFocusedPane("bottom")}>
+                <div className="dshfp-tabs" role="tablist" aria-label="Bottom tabs">
+                  {bottomTabs.length === 0 ? (
+                    <div className="dshfp-tab dshfp-tab-empty-pill">bottom</div>
+                  ) : bottomTabs.map((tt) => (
+                    <div
+                      key={tt.id}
+                      className={"dshfp-tab" + (tt.id === bottomActiveId ? " on" : "")}
+                      onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); closeBottomTab(tt.id); } }}
+                      onClick={() => setBottomActiveId(tt.id)}
+                      title={tt.path ?? ""}
+                    >
+                      <span className="dshfp-tab-nm">{tt.title}</span>
+                      <button type="button" className="dshfp-tab-x" onClick={(e) => { e.stopPropagation(); closeBottomTab(tt.id); }} title={t?.("dock.close") ?? "Close"} aria-label={t?.("dock.close") ?? "Close"}>✕</button>
+                    </div>
+                  ))}
+                </div>
+                {(() => {
+                  const ba = bottomTabs.find((tt) => tt.id === bottomActiveId) || null;
+                  if (!ba) return <div className="dshfp-tab-empty">Split pane — focus it, then open a file from the tree / a produced-file chip to view two files at once.</div>;
+                  if (isImagePath(ba.path)) return <img className="dshfp-img" src={rawSrc(ba.path, base)} alt={ba.path ?? ""} title={ba.path ?? ""} />;
+                  const bs = dockSrc(ba.path, { session: ba.session, workspace: base });
+                  return <iframe key={"b:" + ba.path + ":" + stamp} src={bs} title={t?.("dock.title") ?? "File pane"} />;
+                })()}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="dshfp-tabs" role="tablist" aria-label={t?.("dock.openTab") ?? "Open tabs"}>
+                {tabs.map((tt) => (
+                  <div
+                    key={tt.id}
+                    className={"dshfp-tab" + (tt.path === path && tt.session === effSession && !activePluginId ? " on" : "")}
+                    onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(tt.id); } }}
+                    onClick={() => openFile(tt.path)}
+                    title={tt.path ?? ""}
+                  >
+                    <span className="dshfp-tab-nm">{tt.title}</span>
+                    <button type="button" className="dshfp-tab-x" onClick={(e) => { e.stopPropagation(); closeTab(tt.id); }} title={t?.("dock.close") ?? "Close"} aria-label={t?.("dock.close") ?? "Close"}>✕</button>
+                  </div>
+                ))}
+                {pluginTabs.map((pt) => (
+                  <div
+                    key={"plugin:" + pt.id}
+                    className={"dshfp-tab" + (activePluginId === pt.id ? " on" : "")}
+                    onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); filePane?.closeTab?.(pt.id); } }}
+                    onClick={() => { setActivePluginId(pt.id); setShowTree(false); }}
+                    title={pt.title ?? pt.id}
+                  >
+                    <span className="dshfp-tab-nm">{pt.title ?? pt.id}</span>
+                    {pt.closable !== false ? (
+                      <button type="button" className="dshfp-tab-x" onClick={(e) => { e.stopPropagation(); filePane?.closeTab?.(pt.id); }} title={t?.("dock.close") ?? "Close"} aria-label={t?.("dock.close") ?? "Close"}>✕</button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+              {activePluginId ? (() => {
+                const pt = pluginTabs.find((x) => x.id === activePluginId);
+                if (!pt) return null;
+                const C = pt.component;
+                return C ? <C sessionId={effSession} /> : <div className="dshfp-tab-empty">{t?.("dock.noSession") ?? "No content"}</div>;
+              })() : (
+                <iframe key={path + ":" + diff + ":" + stamp} src={src} title={t?.("dock.title") ?? "File pane"} />
+              )}
+            </>
+          )}
+        </div>
       </div>
       {gitErr ? <div className="dshfp-git-err">{gitErr}</div> : null}
       <div className="dshfp-status">
@@ -1205,6 +1556,7 @@ function createDockEntry(services) {
       getCwd={services.getCwd}
       themeController={services.themeController}
       defaultTheme={services.defaultTheme}
+      filePane={services.filePane}
     />
   );
 }
@@ -1339,7 +1691,18 @@ function apply(ctx) {
   // get property config without inject". Seed from localStorage (persisted wins);
   // empty → resolveInitialPreset returns dsh-default (no override).
   const defaultTheme = resolveInitialPreset(undefined, (() => { try { return globalThis.localStorage?.getItem(THEME_STORAGE_KEY) ?? null; } catch { return null; } })());
-  const DockEntry = createDockEntry({ t: ctx.locale.bind(NS), layout, getSession, getCwd, themeController, defaultTheme });
+  // Service-first extension point (ported from DSH-better-sidebar's ctx.betterSidebar):
+  // other plugins register read-only tabs / file viewers that appear in our workbench.
+  const filePane = createFilePaneService();
+  ctx.provide("filePane", filePane);
+  // Dogfood: register our built-in file viewer so other plugins can discover the
+  // file pane as a viewer extension point (read-only — component is null because
+  // the dock renders files itself via the secure host /browser route).
+  ctx.effect(
+    () => filePane.registerFileViewer({ id: "dsh-file-pane:file", extensions: ["*"], component: null }),
+    "dsh-file-pane: register file viewer",
+  );
+  const DockEntry = createDockEntry({ t: ctx.locale.bind(NS), layout, getSession, getCwd, themeController, defaultTheme, filePane });
   slots.inject("details", () =>
     slots.register({ name: "details", priority: -1, locale: NS }, DockEntry)
   );
